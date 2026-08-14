@@ -951,12 +951,14 @@ def decoupled_historical_candle_ingestion_loop():
                             if isinstance(latest_node, list) and len(latest_node) > 0:
                                 live_oi = 0.0
                                 live_vol = 0.0
-                                
-                                # Unpack fields dynamically based on the exact inner array length footprint
+
+                                # 🟢 CORRECTED INDEX MAPPING
                                 if len(latest_node) == 6:
-                                    live_oi  = float(latest_node[5])
-                                    live_vol = float(latest_node[4]) # Proxy volume from close fluctuations
+                                    # Volume is at index 5, OI is not available
+                                    live_vol = float(latest_node[5])
+                                    live_oi  = 0.0 
                                 elif len(latest_node) >= 7:
+                                    # Volume is at index 5, OI is at index 6
                                     live_vol = float(latest_node[5])
                                     live_oi  = float(latest_node[6])
                                 
