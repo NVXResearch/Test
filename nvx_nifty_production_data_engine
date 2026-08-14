@@ -951,14 +951,12 @@ def decoupled_historical_candle_ingestion_loop():
                             if isinstance(latest_node, list) and len(latest_node) > 0:
                                 live_oi = 0.0
                                 live_vol = 0.0
-
-                                # 🟢 CORRECTED INDEX MAPPING
+                                
+                                # Unpack fields dynamically based on the exact inner array length footprint
                                 if len(latest_node) == 6:
-                                    # Volume is at index 5, OI is not available
-                                    live_vol = float(latest_node[5])
-                                    live_oi  = 0.0 
+                                    live_oi  = float(latest_node[5])
+                                    live_vol = float(latest_node[4]) # Proxy volume from close fluctuations
                                 elif len(latest_node) >= 7:
-                                    # Volume is at index 5, OI is at index 6
                                     live_vol = float(latest_node[5])
                                     live_oi  = float(latest_node[6])
                                 
@@ -1070,9 +1068,9 @@ def async_excel_spreadsheet_writer_worker():
                     # Write column header tracks if creating a fresh file asset on disk
                     if not file_exists:
                         headers = "Timestamp,Date,Weekday,Time,Symbol,Spot,Spot_Velocity, Weighted_AD_Ratio,VIX,VIX_Vel," \
-                                  "OI_Res,OI_Sup,Near_OI,Near_Vol,Near_OI_Vel,Near_Vol_Vel,Comp9,Comp10,Comp11,Skew_Vel," \
+                                  "OI_Res,OI_Sup,Near_OI,Near_Vol,Near_OI_Vel,Near_Vol_Vel,CNXIT, Nifty_Bank, Reliance,Skew_Vel," \
                                   "USD_INR,ATM_Strike,CE_Prem,CE_IV,CE_Delta,CE_Theta,PE_Prem,PE_IV,PE_Delta,PE_Theta," \
-                                  "RSI,EMA_Drift,ATR_Vel,ROC_Mom,Crude,Gold,Sentiment,C38,C39,RBI_Flag,C41,Fed_Flag\n"
+                                  "RSI,EMA_Drift,ATR_Vel,ROC_Mom,Crude,Gold,Sentiment,Corp_Event_Flag, Earn_Surp_Shock,RBI_Flag,Budget_Flag,Fed_Flag\n"
                         csv_file.write(headers)
                         
                     for item in work_items:
@@ -1132,6 +1130,7 @@ def calculate_and_sync_tradetron(time_str):
     
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_str = datetime.now().strftime("%Y-%m-%d")
+    exact_time_str = datetime.now().strftime("%H:%M:%S") # Added seconds
     weekday_num = float(datetime.now().weekday())
 
     # Sweep across all three primary tracking indices lanes symmetrically
@@ -1218,9 +1217,9 @@ def calculate_and_sync_tradetron(time_str):
             # =====================================================================
             # 🟢 UPDATED: near_oi and near_vol are now formatted using :.0f 
             # This strips the unneeded decimal points from your CSV outputs cleanly!
-
+            excel_formula_timestamp = f'="{timestamp_str}"'
             excel_line = (
-                f"{timestamp_str},{date_str},{weekday_num:.1f},{time_str},{symbol},{spot:.2f},1.50,0.85,{vix_close:.2f},{vix_velocity:.4f},"
+                f"{excel_formula_timestamp},{date_str},{weekday_num:.1f},{exact_time_str},{symbol},{spot:.2f},1.50,0.85,{vix_close:.2f},{vix_velocity:.4f},"
                 f"{oi_res},{oi_sup},{near_oi:.0f},{near_vol:.0f},{near_oi_velocity:.4f},{near_vol_velocity:.2f},{comp9:.2f},{comp10:.2f},{comp11:.2f},{skew_vel:.4f},"
                 f"{usd_inr:.2f},{atm_strk},{ce_premium:.2f},{ce_iv:.2f},{ce_delta:.4f},{ce_theta:.4f},{pe_premium:.2f},{pe_iv:.2f},{pe_delta:.4f},{pe_theta:.4f},"
                 f"{rsi_val:.2f},{ema_drift:.4f},{atr_vel:.2f},{roc_mom:.4f},{crude:.2f},{gold:.2f},{sentiment:.4f},0,0,{rbi},0,{fed}"
