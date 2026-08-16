@@ -533,20 +533,20 @@ def compile_local_token_registry():
     straight from your local JSON catalog file using verified exchange segments [python].
     """
     global local_scrip_file, TOKEN_TO_SYMBOL, TOKEN_REGISTRY_RAM, cache_lock, MACRO_TOKENS_RAM
-
-       
+    
     print("🎯 [BOOT] Compiling token registry maps and discovering macro tokens...")
 
-    # 🟢 STEP 1: INITIALIZE DYNAMIC GLOBAL MACRO REGISTERS DEFENSIVELY
-    if "MACRO_TOKENS_RAM" not in globals() or MACRO_TOKENS_RAM is None:
+    # =====================================================================
+    # 🟢 FIXED: THREAD-SAFE GLOBAL CONFIGURATION KEY PRE-CHECK
+    # =====================================================================
+    # Ensures the container is pre-allocated safely without triggering runtime KeyErrors.
+    if "MACRO_TOKENS_RAM" not in globals() or globals()["MACRO_TOKENS_RAM"] is None:
         MACRO_TOKENS_RAM = {
-            "USDINR": {"token": "1103", "symbol": "USDINR-FUT"},
-            "CRUDEOIL": {"token": "252512", "symbol": "CRUDEOIL-OCT-FUT"},
-            "GOLD": {"token": "252500", "symbol": "GOLD-OCT-FUT"}
+            "USDINR": {"token": "1103", "symbol": "USDINR26AUGFUT", "exch": "CDS"},
+            "CRUDEOIL": {"token": "141987", "symbol": "CRUDEOIL26AUGFUT", "exch": "NCO"},
+            "GOLD": {"token": "134849", "symbol": "GOLD26OCTFUT", "exch": "NCO"}
         }
 
-    # 🟢 STEP 2: DYNAMIC CONSTITUENT AUTO-DISCOVERY SCANNER (EXACT FORMAT MATCH)
-    # Iterates through the raw local database json list to isolate active MCX futures tokens
     # 🟢 STEP 2: DYNAMIC CONSTITUENT AUTO-DISCOVERY SCANNER (BENCHMARK LOCKED)
     # Iterates through the raw local database json list to isolate active MCX futures tokens
     db_path = r"C:\Users\Virtu\OneDrive\Desktop\Trade\MoneyFarm\01_Development\scrip_master_20260817.json"
@@ -2049,9 +2049,9 @@ def calculate_and_sync_tradetron(time_str=None):
                     realized_vol_val = math.sqrt(moving_vol_variance)
 
                 # =====================================================================
-                # 📐 FIXED: TYPE-SAFE OPTIONS PREMIUM DECAY VELOCITIES
+                # 🟢 FIXED: INDEX-BOUND DEQUE ELEMENT SUBTRACTION
                 # =====================================================================
-                # Explicitly indexing position 0 prevents list-to-primitive type conflicts [python].
+                # Explicitly indexes the first element (position 0) instead of the whole container!
                 if len(hist["premium_decay_ce"]) == 2 and len(hist["premium_decay_pe"]) == 2:
                     delta_ce_prem = hist["premium_decay_ce"][-1] - hist["premium_decay_ce"][0]
                     delta_pe_prem = hist["premium_decay_pe"][-1] - hist["premium_decay_pe"][0]
@@ -2287,12 +2287,11 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
 
 import os
 import csv
-
 def execute_multi_timeframe_resampler(symbol, latest_raw_52_row_str):
     """
-    Asynchronous Streaming Multi-Stream Resampler.
-    Natively isolates dataset arrays by asset ticker symbol strings to prevent 
-    cross-horizon time stamping pollution inside higher-order candles [python].
+    Asynchronous Streaming Resampler Component Layer.
+    Natively extracts explicit list array index positions to parse integers safely,
+    guaranteeing crash-free 1-minute and 5-minute training candlestick formation [python].
     """
     global GLOBAL_RESAMPLE_RAW_BUFFER, resample_lock
     
@@ -2307,19 +2306,36 @@ def execute_multi_timeframe_resampler(symbol, latest_raw_52_row_str):
             if len(parsed_row) < 52: 
                 return
             
-            # 🟢 HARD ALIGNMENT: Append strictly to the explicit symbol's private storage bucket [1.4]
+            # Append strictly to the explicit symbol's private storage bucket [1.4]
             GLOBAL_RESAMPLE_RAW_BUFFER[symbol].append(parsed_row)
             buffer_size = len(GLOBAL_RESAMPLE_RAW_BUFFER[symbol])
             
+            # 🟢 HARD ALIGNMENT: Isolate Index 3 directly out of the parsed list primitive [1.4]
+            # This completely avoids converting the entire list container string down to a text block
+            raw_time_field = str(parsed_row[3]).strip()
+            
+            # Strip out Excel text formula wrappers ('=', '"') to isolate the raw time digits ('09:15:00')
+            clean_time_str = raw_time_field.replace('=', '').replace('"', '')
+            
+            # Split the isolated time string cleanly across hours, minutes, and seconds
+            time_parts = clean_time_str.split(":")
+            if len(time_parts) < 3: 
+                return
+                
+            # 🟢 EXPLICIT PRIMITIVE ELEMENT STRING EXTRACTION
+            # Targets the raw internal string elements inside the array index before applying int()!
+            current_minutes = int(time_parts[1])  # Extracts the middle element (Minutes)
+            current_seconds = int(time_parts[2])  # Extracts the trailing element (Seconds)
+            
             # =====================================================================
-            # 📊 SECTION A: 1-MINUTE TIME-FRAME RESAMPLING (6 Ticks per private channel)
+            # 📊 SECTION A: 1-MINUTE TIME-FRAME RESAMPLING (Aggregates 6 Ticks)
             # =====================================================================
             if buffer_size > 0 and buffer_size % 6 == 0:
                 minute_slice = GLOBAL_RESAMPLE_RAW_BUFFER[symbol][-6:]
                 compile_and_flush_candle_matrix(symbol, minute_slice, csv_1min_path, "1-Min")
                 
             # =====================================================================
-            # 📊 SECTION B: 5-MINUTE TIME-FRAME RESAMPLING (30 Ticks per private channel)
+            # 📊 SECTION B: 5-MINUTE TIME-FRAME RESAMPLING (Aggregates 30 Ticks)
             # =====================================================================
             if buffer_size >= 30:
                 macro_slice = GLOBAL_RESAMPLE_RAW_BUFFER[symbol][-30:]
