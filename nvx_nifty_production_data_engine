@@ -1239,46 +1239,64 @@ def start_angelone_websocket_listener():
 
 def pull_live_rest_snapshot_prices():
     """
-    Decoupled REST Snapshot Polling Engine v5.9.
-    Natively references dynamically discovered NCO macro contract parameters 
-    to achieve error-free commodities data ingestion on boot [python].
+    Decoupled Self-Healing REST Snapshot Polling Engine.
+    Detects dropped broker session states and runs automatic re-handshakes
+    on the fly to eliminate frozen fallback loops entirely [python].
     """
-    global REST_API_OPTIONS_CACHE, cache_lock, macro_lock, LATEST_GLOBAL_MACRO_RECORD, MACRO_TOKENS_RAM
+    global REST_API_OPTIONS_CACHE, cache_lock, macro_lock, LATEST_GLOBAL_MACRO_RECORD
     global spot_close, banknifty_close, sensex_close, vix_close
-    global smart_connect
+    global GLOBAL_CRUDE_OIL, GLOBAL_GOLD_SPOT, MACRO_TOKENS_RAM
+    global smart_connect # Active validated connection handle pointer
 
-    # 🟢 STEP 1: INITIALIZE LOCAL VARIABLES DEFENSIVELY AT FUNCTION ROOT
-    crude_token  = "141987"
-    crude_symbol = "CRUDEOIL26AUGFUT"
-    gold_token   = "134849"
-    gold_symbol  = "GOLD26OCTFUT"
+    # Establish baseline absolute memory fallbacks from live state
+    crude_ltp = float(GLOBAL_CRUDE_OIL) if GLOBAL_CRUDE_OIL > 0.0 else 7868.00
+    gold_ltp  = float(GLOBAL_GOLD_SPOT) if GLOBAL_GOLD_SPOT > 0.0 else 123819.00
     
-    crude_ltp    = 6250.00
-    gold_ltp     = 71500.00
+    crude_symbol = "CRUDEOIL26AUGFUT"
+    gold_symbol  = "GOLD26OCTFUT"
+    crude_token, gold_token = "141987", "134849"
 
-    # Extract dynamically discovered NCO parameters from memory maps safely
     try:
         if "MACRO_TOKENS_RAM" in globals() and MACRO_TOKENS_RAM is not None:
             crude_token  = str(MACRO_TOKENS_RAM["CRUDEOIL"]["token"]).strip()
             crude_symbol = str(MACRO_TOKENS_RAM["CRUDEOIL"]["symbol"]).strip()
             gold_token   = str(MACRO_TOKENS_RAM["GOLD"]["token"]).strip()
             gold_symbol  = str(MACRO_TOKENS_RAM["GOLD"]["symbol"]).strip()
-    except Exception:
-        pass
+    except Exception: pass
 
     def extract_ltp_safely(api_response, fallback):
         try:
-            if api_response and api_response.get("status") is True:
-                data_block = api_response.get("data")
-                if data_block and "ltp" in data_block:
-                    return float(data_block["ltp"])
+            if api_response:
+                # 🟢 THE RE-AUTH SHIELD TRIGGER:
+                # If the broker returns token errors, notify system node immediately
+                if api_response.get("errorcode") in ["AB1004", "AB2001", "AB4046"]:
+                    globals()["__REST_SESSION_VALID__"] = False
+                
+                if api_response.get("status") is True:
+                    data_block = api_response.get("data", {})
+                    if data_block and "ltp" in data_block:
+                        return float(data_block["ltp"])
         except Exception: pass
         return float(fallback)
 
+    # Check session flags before querying
+    if globals().get("__REST_SESSION_VALID__", True) is False:
+        try:
+            print("🔄 [SELF-HEALING REST] Token drop detected! Attempting hot re-authentication pass...")
+            # Run your existing dynamic morning login function to refresh smart_connect tokens
+            if execute_angel_one_handshake():
+                globals()["__REST_SESSION_VALID__"] = True
+                print("🔓 [SELF-HEALING SUCCESS] Connection tunnel restored successfully!")
+        except Exception as auth_err:
+            print(f"⚠️ [SELF-HEALING CRITICAL] Re-auth pass deferred: {auth_err}")
+            return # Skip this iteration pass while session resets
+
+    # =====================================================================
     # 🏛️ LAYER A: CORE INDEX SPOTS & EQUITIES SNAPSHOT PIPELINE
+    # =====================================================================
     try:
-        nifty_res  = smart_connect.ltpData("NSE", "Nifty 50", "26000")
-        bank_res   = smart_connect.ltpData("NSE", "Nifty Bank", "26009")
+        nifty_res  = smart_connect.ltpData("NSE", "Nifty 50", "99926000")
+        bank_res   = smart_connect.ltpData("NSE", "Nifty Bank", "99926009")
         vix_res    = smart_connect.ltpData("NSE", "INDIA VIX", "99926017")
         cnxit_res  = smart_connect.ltpData("NSE", "Nifty IT", "99926008")
         sensex_res = smart_connect.ltpData("BSE", "SENSEX", "1")
@@ -1294,11 +1312,11 @@ def pull_live_rest_snapshot_prices():
         axis_res   = smart_connect.ltpData("NSE", "AXISBANK-EQ", "5900")
         kotak_res  = smart_connect.ltpData("NSE", "KOTAKBANK-EQ", "1922")
 
-        nifty_spot  = extract_ltp_safely(nifty_res, 24366.00)
-        bank_spot   = extract_ltp_safely(bank_res, 57491.10)
-        vix_spot    = extract_ltp_safely(vix_res, 11.31)
+        nifty_spot  = extract_ltp_safely(nifty_res, spot_close if spot_close > 0 else 24366.00)
+        bank_spot   = extract_ltp_safely(bank_res, banknifty_close if banknifty_close > 0 else 57491.10)
+        vix_spot    = extract_ltp_safely(vix_res, vix_close if vix_close > 0 else 11.31)
         cnxit_spot  = extract_ltp_safely(cnxit_res, 41250.00)
-        sensex_spot = extract_ltp_safely(sensex_res, 78009.25)
+        sensex_spot = extract_ltp_safely(sensex_res, sensex_close if sensex_close > 0 else 78009.25)
 
         rel_ltp   = extract_ltp_safely(rel_res, 1750.35)
         hdfc_ltp  = extract_ltp_safely(hdfc_res, 1645.20)
@@ -1315,8 +1333,7 @@ def pull_live_rest_snapshot_prices():
 
         with cache_lock:
             for symbol in ["NIFTY", "BANKNIFTY", "SENSEX"]:
-                if symbol not in REST_API_OPTIONS_CACHE: 
-                    REST_API_OPTIONS_CACHE[symbol] = {}
+                if symbol not in REST_API_OPTIONS_CACHE: REST_API_OPTIONS_CACHE[symbol] = {}
                 opt = REST_API_OPTIONS_CACHE[symbol]
                 opt["CNXIT_LTP"], opt["BSE_IT_LTP"] = cnxit_spot, cnxit_spot
                 opt["RELIANCE_LTP"], opt["HDFCBANK_LTP"], opt["ICICIBANK_LTP"] = rel_ltp, hdfc_ltp, icici_ltp
@@ -1331,20 +1348,18 @@ def pull_live_rest_snapshot_prices():
     # =====================================================================
     # 🏛️ LAYER B: SHIELDED COMMODITIES EXTRACTION INTERFACE (NCO ROUTING)
     # =====================================================================
-    # Route parameters across the exact dynamic NCO segments verified tokens
     try:
         crude_res = smart_connect.ltpData("NCO", crude_symbol, crude_token)
         if crude_res and crude_res.get("status") is True:
-            crude_ltp = extract_ltp_safely(crude_res, 6250.00)
+            crude_ltp = extract_ltp_safely(crude_res, crude_ltp)
     except Exception: pass
 
     try:
         gold_res = smart_connect.ltpData("NCO", gold_symbol, gold_token)
         if gold_res and gold_res.get("status") is True:
-            gold_ltp = extract_ltp_safely(gold_res, 71500.00)
+            gold_ltp = extract_ltp_safely(gold_res, gold_ltp)
     except Exception: pass
 
-    # Commit values thread-safe to the global macro record
     if "macro_lock" in globals() and "LATEST_GLOBAL_MACRO_RECORD" in globals():
         with macro_lock:
             LATEST_GLOBAL_MACRO_RECORD["prev_vix"] = LATEST_GLOBAL_MACRO_RECORD.get("India_VIX", 11.31)
@@ -2218,17 +2233,28 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
         date_str          = str(latest_row[1]).strip() # Column 2
         weekday_num       = str(latest_row[2]).strip() # Column 3
         
-        # 🟢 TIME-SERIES TRUNCATION PLUG:
-        # Cleans out formula syntax and locks seconds down to absolute zero (:00) [1.4]
+                # 🟢 THE DEFINITIVE TIME-SERIES TRUNCATION PLUG:
+        # Cleans out formula parameters, truncates seconds to zero, 
+        # and floors minutes to clean multiples of 5 for macro candles! [1.4]
         raw_time_string = str(latest_row[3]).replace('=', '').replace('"', '').strip()
         time_parts = raw_time_string.split(":")
+        
         if len(time_parts) >= 2:
-            time_str = f"{time_parts[0]}:{time_parts[1]}:00"
+            hours = time_parts[0]
+            minutes = int(time_parts[1])
+            
+            # 🟢 THE MULTIPLE OF 5 LOGIC CELL:
+            # If processing a 5-Min candle, mathematically floor round the minutes element! [1.4]
+            if timeframe_label == "5-Min":
+                minutes = (minutes // 5) * 5
+                
+            # Reconstruct the string format with zero-padded minutes and absolute zero seconds
+            time_str = f"{hours}:{minutes:02d}:00"
         else:
             time_str = raw_time_string
             
         time_str_formula = f'="{time_str}"'
-        
+
         def get_safe_float_list(index_pos):
             float_pool = []
             for row in raw_rows_slice:
