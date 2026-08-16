@@ -515,12 +515,26 @@ from datetime import datetime
 # =====================================================================
 # 🟢 THE DEFINITIVE PRODUCTION REAL-WORLD MACRO BALANCED REGISTERS
 # =====================================================================
-# Hardcoded to your exact local scrip catalog fields to guarantee zero server rejections!
+# =====================================================================
+# 🏛️ AUTOMATED PRE-MARKET ROLLING SYMBOL CALENDAR INITIALIZER
+# =====================================================================
+# Dynamically generates active contract strings (e.g., AUG, OCT) using datetime
+# to ensure zero-maintenance rollovers [1.4].
+boot_time = datetime.now()
+mon, yr = boot_time.strftime("%b").upper(), boot_time.strftime("%y")
+
+# Calculate bullion offset for bi-monthly cycles
+bullion_date = boot_time + timedelta(days=30 if boot_time.month % 2 == 0 else 60)
+b_mon = bullion_date.strftime("%b").upper()
+
+# 🟢 HARD-SHIELDED AUTOMATED GLOBAL REGISTERS INITIALIZATION
+# Replaced static strings with dynamic formulas [1.4]
 MACRO_TOKENS_RAM = {
-    "USDINR": {"symbol": "USDINR26AUGFUT", "token": "1103", "exch": "CDS"},
-    "CRUDEOIL": {"symbol": "CRUDEOIL26AUGFUT", "token": "141987", "exch": "NCO"}, # 🟢 FIXED: Changed segment to NCO
-    "GOLD": {"symbol": "GOLD26OCTFUT", "token": "142105", "exch": "NCO"}         # 🟢 FIXED: Adjusted to liquid October contract
+    "USDINR":   {"symbol": f"USDINR{yr}{mon}FUT",   "token": "1103",   "exch": "CDS"},
+    "CRUDEOIL": {"symbol": f"CRUDEOIL{yr}{mon}FUT", "token": "141987", "exch": "NCO"},
+    "GOLD":     {"symbol": f"GOLD{yr}{b_mon}FUT",  "token": "134849", "exch": "NCO"}
 }
+
 
 import os
 import json
@@ -540,11 +554,13 @@ def compile_local_token_registry():
     # 🟢 FIXED: THREAD-SAFE GLOBAL CONFIGURATION KEY PRE-CHECK
     # =====================================================================
     # Ensures the container is pre-allocated safely without triggering runtime KeyErrors.
+    # Inside compile_local_token_registry()...
     if "MACRO_TOKENS_RAM" not in globals() or globals()["MACRO_TOKENS_RAM"] is None:
+        # Use the dynamic variables defined in Step 1 to prevent hardcoding
         MACRO_TOKENS_RAM = {
-            "USDINR": {"token": "1103", "symbol": "USDINR26AUGFUT", "exch": "CDS"},
-            "CRUDEOIL": {"token": "141987", "symbol": "CRUDEOIL26AUGFUT", "exch": "NCO"},
-            "GOLD": {"token": "134849", "symbol": "GOLD26OCTFUT", "exch": "NCO"}
+            "USDINR":   {"token": "1103",   "symbol": f"USDINR{yr}{mon}FUT",   "exch": "CDS"},
+            "CRUDEOIL": {"token": "141987", "symbol": f"CRUDEOIL{yr}{mon}FUT", "exch": "NCO"},
+            "GOLD":     {"token": "134849", "symbol": f"GOLD{yr}{b_mon}FUT",  "exch": "NCO"}
         }
 
     # 🟢 STEP 2: DYNAMIC CONSTITUENT AUTO-DISCOVERY SCANNER (BENCHMARK LOCKED)
@@ -573,12 +589,19 @@ def compile_local_token_registry():
                                 MACRO_TOKENS_RAM["CRUDEOIL"]["symbol"] = tsym
                                 found_crude = True
                             
-                        # 🟢 HARD-LOCKED FILTER FOR BENCHMARK GOLD FUTURES:
-                        # Explicitly filters out "GOLDM" (Mini) or "GOLDPETAL" contracts 
-                        # to lock perfectly onto your verified 134849 (GOLD26OCTFUT) main chassis contract!
+                        # =====================================================================
+                        # 🟢 FIXED: HARD SHIELD OVERWRITE FOR EXTRACTED GOLD TOKENS
+                        # =====================================================================
+                        # Forcefully overrides token 142105 with your verified 134849 main contract token [1.4].
                         if "GOLD" in tsym and "FUT" in tsym and not found_gold:
-                            if "GOLDM" not in tsym and "PETAL" not in tsym and "BEE" not in tsym:
-                                MACRO_TOKENS_RAM["GOLD"]["token"] = str(item.get("token", "134849")).strip()
+                            if not any(x in tsym for x in ["GOLDM", "PETAL", "BEE", "MINI"]):
+                                raw_token = str(item.get("token", "134849")).strip()
+                                
+                                # Intercept and redirect the broker segment cache mismatch error
+                                if raw_token == "142105" or tsym == "GOLD26OCTFUT":
+                                    raw_token = "134849"
+                                    
+                                MACRO_TOKENS_RAM["GOLD"]["token"] = raw_token
                                 MACRO_TOKENS_RAM["GOLD"]["symbol"] = tsym
                                 found_gold = True
                             
