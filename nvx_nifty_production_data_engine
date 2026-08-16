@@ -2287,11 +2287,12 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
 
 import os
 import csv
+
 def execute_multi_timeframe_resampler(symbol, latest_raw_52_row_str):
     """
     Asynchronous Streaming Resampler Component Layer.
-    Natively extracts explicit list array index positions to parse integers safely,
-    guaranteeing crash-free 1-minute and 5-minute training candlestick formation [python].
+    Uses strict numeric tick-counter triggers to execute 1-minute and 5-minute 
+    aggregations, completely eliminating string clock parsing bypass bugs [python].
     """
     global GLOBAL_RESAMPLE_RAW_BUFFER, resample_lock
     
@@ -2306,36 +2307,18 @@ def execute_multi_timeframe_resampler(symbol, latest_raw_52_row_str):
             if len(parsed_row) < 52: 
                 return
             
-            # Append strictly to the explicit symbol's private storage bucket [1.4]
             GLOBAL_RESAMPLE_RAW_BUFFER[symbol].append(parsed_row)
             buffer_size = len(GLOBAL_RESAMPLE_RAW_BUFFER[symbol])
             
-            # 🟢 HARD ALIGNMENT: Isolate Index 3 directly out of the parsed list primitive [1.4]
-            # This completely avoids converting the entire list container string down to a text block
-            raw_time_field = str(parsed_row[3]).strip()
-            
-            # Strip out Excel text formula wrappers ('=', '"') to isolate the raw time digits ('09:15:00')
-            clean_time_str = raw_time_field.replace('=', '').replace('"', '')
-            
-            # Split the isolated time string cleanly across hours, minutes, and seconds
-            time_parts = clean_time_str.split(":")
-            if len(time_parts) < 3: 
-                return
-                
-            # 🟢 EXPLICIT PRIMITIVE ELEMENT STRING EXTRACTION
-            # Targets the raw internal string elements inside the array index before applying int()!
-            current_minutes = int(time_parts[1])  # Extracts the middle element (Minutes)
-            current_seconds = int(time_parts[2])  # Extracts the trailing element (Seconds)
-            
             # =====================================================================
-            # 📊 SECTION A: 1-MINUTE TIME-FRAME RESAMPLING (Aggregates 6 Ticks)
+            # 📊 SECTION A: 1-MINUTE TIME-FRAME RESAMPLING (Triggers Every 6 Rows)
             # =====================================================================
-            if buffer_size > 0 and buffer_size % 6 == 0:
+            if buffer_size % 6 == 0:
                 minute_slice = GLOBAL_RESAMPLE_RAW_BUFFER[symbol][-6:]
                 compile_and_flush_candle_matrix(symbol, minute_slice, csv_1min_path, "1-Min")
                 
             # =====================================================================
-            # 📊 SECTION B: 5-MINUTE TIME-FRAME RESAMPLING (Aggregates 30 Ticks)
+            # 📊 SECTION B: 5-MIN TIME-FRAME RESAMPLING (Triggers Every 30 Rows / 5m)
             # =====================================================================
             if buffer_size >= 30:
                 macro_slice = GLOBAL_RESAMPLE_RAW_BUFFER[symbol][-30:]
