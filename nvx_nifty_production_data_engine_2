@@ -192,7 +192,6 @@ USER_ID = YOUR_USER_ID
 PASSWORD = YOUR_PASSWORD
 TOTP_TOKEN = YOUR_TOTP_TOKEN
 
-
 # Lookback tuning windows for linear mathematical ring buffers
 LOOKBACK_WINDOWS = {
     "EMA": 9, "ATR": 14, "ROC": 5, "BB": 20, "RSI": 14, "SKEW": 10
@@ -1267,7 +1266,6 @@ def decoupled_historical_candle_ingestion_loop():
                         if candle_array and len(candle_array) > 0:
                             latest_node = candle_array[-1]
                             
-                            # Safely unwrap nested list array matrices
                             if isinstance(latest_node, list) and len(latest_node) > 0:
                                 live_oi = 0.0
                                 live_vol = 0.0
@@ -1275,18 +1273,30 @@ def decoupled_historical_candle_ingestion_loop():
                                 # Unpack fields dynamically based on the exact inner array length footprint
                                 if len(latest_node) == 6:
                                     live_oi  = float(latest_node[5])
-                                    live_vol = float(latest_node[4]) # Proxy volume from close fluctuations
+                                    live_vol = float(latest_node[4])
                                 elif len(latest_node) >= 7:
                                     live_vol = float(latest_node[5])
                                     live_oi  = float(latest_node[6])
                                 
-                                # 🟢 PUSH DIRECTLY TO ROOT GLOBAL MEMORY PRIMITIVES FOR EXCEL EXPORT
-                                if symbol == "NIFTY" and live_oi > 0.0:
-                                    GLOBAL_NIFTY_OI, GLOBAL_NIFTY_VOL = live_oi, live_vol
-                                elif symbol == "BANKNIFTY" and live_oi > 0.0:
-                                    GLOBAL_BANKNIFTY_OI, GLOBAL_BANKNIFTY_VOL = live_oi, live_vol
-                                elif symbol == "SENSEX" and live_oi > 0.0:
-                                    GLOBAL_SENSEX_OI, GLOBAL_SENSEX_VOL = live_oi, live_vol
+                                # =====================================================================
+                                # 🟢 PROD FIXED: DYNAMIC TOKEN TYPE DETECTOR
+                                # =====================================================================
+                                # Compares the active token to your RAM registry maps to isolate 
+                                # Call and Put variables independently without any NameErrors [1.1]!
+                                current_token_str = str(candle_params.get("symboltoken", ""))
+                                ce_match_token = str(TOKEN_REGISTRY_RAM[symbol].get("ce_token", ""))
+                                pe_match_token = str(TOKEN_REGISTRY_RAM[symbol].get("pe_token", ""))
+                                
+                                opt_type = "UNKNOWN"
+                                if current_token_str == ce_match_token:
+                                    opt_type = "CE"
+                                elif current_token_str == pe_match_token:
+                                    opt_type = "PE"
+                                    
+                                # Commit to separated global variables safely for your metrics builder
+                                if live_oi > 0.0 and opt_type != "UNKNOWN":
+                                    globals()[f"GLOBAL_{symbol}_{opt_type}_OI"] = live_oi
+                                    globals()[f"GLOBAL_{symbol}_{opt_type}_VOL"] = live_vol
 
                                                                 # 🔍 IN-LINE NETWORK AUDITOR TRACE
                                 # This explicitly logs the raw array packet next to parsed metrics
@@ -1797,28 +1807,107 @@ def calculate_and_sync_tradetron(time_str=None):
             # =====================================================================
             # 📦 STEP 1: INITIALIZE AND MAP CURRENT GLOBAL MEMORY CACHES
             # =====================================================================
+            # =====================================================================
+            # 🟢 PRODUCTION REBUILT: DUAL-LANE EXTRACTOR CHASSIS
+            # =====================================================================
+            # Replaces legacy single variables with concurrent CE and PE data streams [1.1]!
+            
+            # 1. Dynamically pull spot close prices with your specific testing proxies
             if symbol == "NIFTY":
-                near_oi  = float(GLOBAL_NIFTY_OI) if GLOBAL_NIFTY_OI > 0 else 47.0
-                near_vol = float(GLOBAL_NIFTY_VOL) if GLOBAL_NIFTY_VOL > 0 else 290.0
-                spot     = float(spot_close) if spot_close > 0 else 24366.00
+                spot = float(spot_close) if spot_close > 0 else 24366.00
+                default_ce_oi, default_pe_oi = 25.0, 22.0
+                default_ce_vol, default_pe_vol = 150.0, 140.0
             elif symbol == "BANKNIFTY":
-                near_oi  = float(GLOBAL_BANKNIFTY_OI) if GLOBAL_BANKNIFTY_OI > 0 else 12.0
-                near_vol = float(GLOBAL_BANKNIFTY_VOL) if GLOBAL_BANKNIFTY_VOL > 0 else 150.0
-                spot     = float(banknifty_close) if banknifty_close > 0 else 57425.35
+                spot = float(banknifty_close) if banknifty_close > 0 else 57425.35
+                default_ce_oi, default_pe_oi = 7.0, 5.0
+                default_ce_vol, default_pe_vol = 80.0, 70.0
             elif symbol == "SENSEX":
-                near_oi  = float(GLOBAL_SENSEX_OI) if GLOBAL_SENSEX_OI > 0 else 3.0
-                near_vol = float(GLOBAL_SENSEX_VOL) if GLOBAL_SENSEX_VOL > 0 else 879.0
-                spot     = float(sensex_close) if sensex_close > 0 else 77819.01
+                spot = float(sensex_close) if sensex_close > 0 else 77819.01
+                default_ce_oi, default_pe_oi = 2.0, 1.0
+                default_ce_vol, default_pe_vol = 450.0, 429.0
+            else:
+                spot = 0.0
+                default_ce_oi, default_pe_oi = 1.0, 1.0
+                default_ce_vol, default_pe_vol = 1.0, 1.0
+
+            # 2. Extract separated streaming metrics cleanly out of global RAM registers
+            ce_oi  = float(globals().get(f"GLOBAL_{symbol}_CE_OI", 0.0))
+            pe_oi  = float(globals().get(f"GLOBAL_{symbol}_PE_OI", 0.0))
+            ce_vol = float(globals().get(f"GLOBAL_{symbol}_CE_VOL", 0.0))
+            pe_vol = float(globals().get(f"GLOBAL_{symbol}_PE_VOL", 0.0))
+
+            # 3. Apply safe fallback thresholds to prevent uninitialized startup drops [1.1]
+            if ce_oi == 0.0:  ce_oi  = default_ce_oi
+            if pe_oi == 0.0:  pe_oi  = default_pe_oi
+            if ce_vol == 0.0: ce_vol = default_ce_vol
+            if pe_vol == 0.0: pe_vol = default_pe_vol
+
+            # 4. Synthesize unified historical totals for legacy column compatibility if required
+            near_oi  = ce_oi + pe_oi
+            near_vol = ce_vol + pe_vol
+
+
+            # =====================================================================
+            # 🟢 PRODUCTION STANDARD: MULTI-STRIKE ACTIVE OI WALL DISCOVERY SCANNER
+            # =====================================================================
+            # Scans every individual contract strike in memory to locate absolute institutional floors & ceilings [1.1]!
+            max_ce_oi = -1.0
+            max_pe_oi = -1.0
+            
+            # Anchor safe fallback defaults matching your specific session proxies if the chain is cold [1.1]
+            if symbol == "NIFTY":
+                oi_res, oi_sup = 24500.0, 24000.0
+            elif symbol == "BANKNIFTY":
+                oi_res, oi_sup = 52500.0, 52000.0
+            elif symbol == "SENSEX":
+                oi_res, oi_sup = 79500.0, 79000.0
+            else:
+                oi_res, oi_sup = 0.0, 0.0
 
             # Extract cache options parameters defensively with robust pre-open fallbacks
             with cache_lock:
                 opt = REST_API_OPTIONS_CACHE.get(symbol, {})
-                oi_res     = opt.get("OI_Resistance_Strike", f"{(spot + 100):.2f}")
-                oi_sup     = opt.get("OI_Support_Strike", f"{(spot - 100):.2f}")
+
+                #oi_res     = opt.get("OI_Resistance_Strike", f"{(spot + 100):.2f}")
+                #oi_sup     = opt.get("OI_Support_Strike", f"{(spot - 100):.2f}")
+                option_chain_matrix = opt.get("option_chain_data", {})
+
+                if option_chain_matrix and isinstance(option_chain_matrix, dict):
+                    # Iterate across every individual strike price node present in the dictionary [1.1]
+                    for strike_str, strike_data in option_chain_matrix.items():
+                        try:
+                            strike_price_val = float(strike_str)
+                            if strike_price_val == 0.0: continue
+                            
+                            current_strike_ce_oi = float(strike_data.get("CE_OI", 0.0))
+                            current_strike_pe_oi = float(strike_data.get("PE_OI", 0.0))
+                            
+                            # 🔥 Ceilings Detector: Lock the absolute highest peak of Call Open Interest
+                            if current_strike_ce_oi > max_ce_oi and current_strike_ce_oi > 0.0:
+                                max_ce_oi = current_strike_ce_oi
+                                oi_res = strike_price_val
+                                
+                            # 🔥 Floors Detector: Lock the absolute highest peak of Put Open Interest
+                            if current_strike_pe_oi > max_pe_oi and current_strike_pe_oi > 0.0:
+                                max_pe_oi = current_strike_pe_oi
+                                oi_sup = strike_price_val
+                                
+                        except ValueError:
+                            continue
+
+                # Lock values explicitly into float formats for smooth 52-column array synchronization
+                oi_res = float(oi_res)
+                oi_sup = float(oi_sup)
+                
+                
                 comp9      = float(opt.get("CNXIT_LTP", 41250.00)) if opt.get("CNXIT_LTP") else 41250.00
                 comp10     = float(opt.get("RELIANCE_LTP", 1750.00)) if opt.get("RELIANCE_LTP") else 1750.00
                 comp11     = float(opt.get("BSE_IT_LTP", 58900.00)) if opt.get("BSE_IT_LTP") else 58900.00
-                skew_vel   = float(opt.get("Skew_Velocity", 0.0000)) if opt.get("Skew_Velocity") else 0.0000
+                #skew_vel   = float(opt.get("Skew_Velocity", 0.0000)) if opt.get("Skew_Velocity") else 0.0000
+                
+
+
+
                 
                 # 🟢 CRASH PROOF PARSER PROTECTION:
                 # Handles missing or empty pre-open strike entries safely without crashing
@@ -1861,8 +1950,48 @@ def calculate_and_sync_tradetron(time_str=None):
             
             # Connect live multi-index component breadth matrix
             ad_ratio_proxy           = compute_complete_institutional_50_ad_ratio(symbol)
-            pcr_oi_volume_proxy      = float(near_oi * 0.92 / near_vol) if near_vol > 0 else 0.8500
-            order_book_imbalance     = ce_p_val / pe_p_val if pe_p_val > 0 else 1.0
+
+            # =====================================================================
+            # 🟢 PRODUCTION STANDARD: LIQUIDITY TURNOVER VELOCITY INDEX
+            # =====================================================================
+            # Replaces the broken proxy layout with a stationary cross-derivative feature [1.1].
+            total_structural_oi   = float(ce_oi + pe_oi)
+            total_momentum_volume = float(ce_vol + pe_vol)
+
+            if total_momentum_volume > 0.0:
+                # Measures the ratio of overnight open commitment to high-frequency churn
+                pcr_oi_volume_proxy = total_structural_oi / total_momentum_volume
+            else:
+                pcr_oi_volume_proxy = 1.0
+
+            # Lock precision to 4 decimal places for clean matrix loading
+            pcr_oi_volume_proxy = round(float(pcr_oi_volume_proxy), 4)
+
+
+            #pcr_oi_volume_proxy      = float(near_oi * 0.92 / near_vol) if near_vol > 0 else 0.8500
+
+            # =====================================================================
+            # 📊 BOUNDED S-R VOLUME ORDER BOOK IMBALANCE CALCULATION
+            # =====================================================================
+            # Forces a perfectly symmetric linear scale to shield your ML data loaders [1.1]!
+            ce_vol = float(globals().get(f"GLOBAL_{symbol}_CE_VOL", 0.0))
+            pe_vol = float(globals().get(f"GLOBAL_{symbol}_PE_VOL", 0.0))
+
+            total_volume_pressure = ce_vol + pe_vol
+
+            if total_volume_pressure > 0.0:
+                # Symmetrical plane: +1.0 = Pure CE volume, 0.0 = Balanced, -1.0 = Pure PE volume [1.1]
+                order_book_imbalance = (ce_vol - pe_vol) / total_volume_pressure
+            else:
+                order_book_imbalance = 0.0
+
+            # Store back into your master spreadsheet matrix structures
+            globals()[f"CALC_{symbol}_ORDER_BOOK_IMBALANCE"] = round(order_book_imbalance, 4)
+
+
+            #order_book_imbalance     = ce_p_val / pe_p_val if pe_p_val > 0 else 1.0
+
+
             cumulative_volume_delta  = near_vol_velocity * 0.65
             gamma_wall_distance      = abs(spot - atm_strk)
             sentiment_index          = float(ce_delta) + float(pe_delta)
