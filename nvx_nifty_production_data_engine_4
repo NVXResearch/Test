@@ -3519,22 +3519,32 @@ def calculate_and_sync_tradetron(time_str=None):
             # =====================================================================
             # 🗠 PHASE 1: THREAD-SAFE LOW-LATENCY RAM CACHE INGESTION
             # =====================================================================
+            # =====================================================================
+            # 🗠 PHASE 1: DIRECT HARD-LOCKED CACHE EXTRACTION CHASSIS
+            # Location: Doddanekkundi, Bengaluru, Karnataka, India [python]
+            # 🟢 ZERO LOOKUP LATENCY: Pinned natively to official exchange tokens.
+            # 🟢 SENSEX ROUTING FIXED: Hard-locked straight to live token "99919000".
+            # =====================================================================
             with ws_cache_lock:
-                # A. Extract Index Spot Prices dynamically using central global identity pointers [1.1]
+                # A. Extract Index Spot Prices dynamically using exact hard-locked keys
                 if sym_upper == "NIFTY":
-                    spot = float(LATEST_WS_TICK_CACHE.get(globals().get("NIFTY_SPOT_TOKEN", "26000"), {}).get("ltp", spot_close if spot_close > 0 else 24300.40))
+                    spot = float(LATEST_WS_TICK_CACHE.get("26000", {}).get("ltp", spot_close if spot_close > 0 else 24300.40))
+                    target_token = "26000"
                 elif sym_upper == "BANKNIFTY":
-                    spot = float(LATEST_WS_TICK_CACHE.get(globals().get("BANKNIFTY_SPOT_TOKEN", "26009"), {}).get("ltp", banknifty_close if banknifty_close > 0 else 57896.35))
+                    spot = float(LATEST_WS_TICK_CACHE.get("26009", {}).get("ltp", banknifty_close if banknifty_close > 0 else 57896.35))
+                    target_token = "26009"
                 else: # SENSEX
-                    sensex_token_id = globals().get("SENSEX_SPOT_TOKEN", "1")
-                    sensex_node = LATEST_WS_TICK_CACHE.get(sensex_token_id) or LATEST_WS_TICK_CACHE.get(f"999{sensex_token_id}") or {}
-                    spot = float(sensex_node.get("ltp", sensex_close if sensex_close > 0 else 77472.94))
+                    # 🌟 FIXED: Target your verified live SENSEX indexing track directly
+                    spot = float(LATEST_WS_TICK_CACHE.get("99919000", {}).get("ltp", sensex_close if sensex_close > 0 else 77472.94))
+                    target_token = "99919000"
 
-                # B. Pull macro gauges threat-safely within the single lock window [1.1]
-                vix_live    = float(LATEST_WS_TICK_CACHE.get(globals().get("INDIA_VIX_TOKEN", "26017"), {}).get("ltp", vix_close if vix_close > 0 else 11.31))
-                usd_inr     = float(LATEST_WS_TICK_CACHE.get(usdinr_token, {}).get("ltp", 85.6400))
-                crude       = float(LATEST_WS_TICK_CACHE.get(crude_token, {}).get("ltp", 7268.70))
-                gold        = float(LATEST_WS_TICK_CACHE.get(gold_token, {}).get("ltp", 162438.00))
+                # B. Pull macro gauges thread-safely within the single lock window [1.1]
+                vix_live    = float(LATEST_WS_TICK_CACHE.get("26017", {}).get("ltp", vix_close if vix_close > 0 else 11.31))
+                
+                # 🌟 FIXED COMMODITIES & FOREX: Mapped straight to active contract cache keys [1.1]
+                usd_inr     = float(LATEST_WS_TICK_CACHE.get("1103", {}).get("ltp", 85.6400))
+                crude       = float(LATEST_WS_TICK_CACHE.get("142416", {}).get("ltp", 7268.70))
+                gold        = float(LATEST_WS_TICK_CACHE.get("142105", {}).get("ltp", 162438.00))
 
                 # C. Extract dynamic Option Chain variables from real-time stream snapshots [1.1]
                 ce_premium  = float(LATEST_WS_TICK_CACHE.get(ce_token, {}).get("ltp", 145.20))
@@ -3547,22 +3557,19 @@ def calculate_and_sync_tradetron(time_str=None):
 
                 # D. Phase 1C: Index-Specific Underlying Equity Components Extractions [1.1]
                 if sym_upper == "NIFTY":
-                    comp9  = float(LATEST_WS_TICK_CACHE.get(globals().get("BANKNIFTY_SPOT_TOKEN", "26009"), {}).get("ltp", banknifty_close if banknifty_close > 0 else 57425.35))
-                    comp11 = float(LATEST_WS_TICK_CACHE.get(globals().get("CNXIT_SPOT_TOKEN", "26008"),    {}).get("ltp", 41250.00))
-                    comp10 = float(LATEST_WS_TICK_CACHE.get(globals().get("RELIANCE_TOKEN", "2885"),      {}).get("ltp", 1750.00))
-                    target_token = globals().get("NIFTY_SPOT_TOKEN", "26000")
+                    comp9  = float(LATEST_WS_TICK_CACHE.get("26009", {}).get("ltp", banknifty_close if banknifty_close > 0 else 57425.35))
+                    comp11 = float(LATEST_WS_TICK_CACHE.get("26008", {}).get("ltp", 41250.00)) # CNXIT Sector [1.1]
+                    comp10 = float(LATEST_WS_TICK_CACHE.get("2885",  {}).get("ltp", 1750.00)) # Reliance NSE [1.1]
                     
                 elif sym_upper == "BANKNIFTY":
-                    comp9  = float(LATEST_WS_TICK_CACHE.get(globals().get("HDFCBANK_TOKEN", "1333"),   {}).get("ltp", 1645.20))
-                    comp11 = float(LATEST_WS_TICK_CACHE.get(globals().get("ICICIBANK_TOKEN", "4963"),  {}).get("ltp", 1180.45))
-                    comp10 = float(LATEST_WS_TICK_CACHE.get(globals().get("KOTAKBANK_TOKEN", "1922"),  {}).get("ltp", 1790.00))
-                    target_token = globals().get("BANKNIFTY_SPOT_TOKEN", "26009")
+                    comp9  = float(LATEST_WS_TICK_CACHE.get("1333",  {}).get("ltp", 1645.20)) # HDFC Bank
+                    comp11 = float(LATEST_WS_TICK_CACHE.get("4963",  {}).get("ltp", 1180.45)) # ICICI Bank
+                    comp10 = float(LATEST_WS_TICK_CACHE.get("1922",  {}).get("ltp", 1790.00)) # Kotak Bank
                     
                 elif sym_upper == "SENSEX":
-                    comp9  = float(LATEST_WS_TICK_CACHE.get(globals().get("BANKEX_SPOT_TOKEN", "12"),     {}).get("ltp", 41250.00))
-                    comp11 = float(LATEST_WS_TICK_CACHE.get(globals().get("BSE_IT_SPOT_TOKEN", "99919005"), {}).get("ltp", 41250.00))
-                    comp10 = float(LATEST_WS_TICK_CACHE.get(globals().get("RELBSE_TOKEN", "500325"),      {}).get("ltp", 1750.00))
-                    target_token = globals().get("SENSEX_SPOT_TOKEN", "1")
+                    comp9  = float(LATEST_WS_TICK_CACHE.get("12",       {}).get("ltp", 41250.00)) # BANKEX Spot [1.1]
+                    comp11 = float(LATEST_WS_TICK_CACHE.get("99919005", {}).get("ltp", 41250.00)) # BSE IT Spot [1.1]
+                    comp10 = float(LATEST_WS_TICK_CACHE.get("500325",   {}).get("ltp", 1750.00)) # Reliance BSE [1.1]
                     
                 else:
                     comp9 = comp10 = comp11 = 0.0
@@ -3585,6 +3592,7 @@ def calculate_and_sync_tradetron(time_str=None):
                 full_market_data_response=raw_streaming_message,
                 last_price=spot
             )
+
 
             # =====================================================================
             # 📊 PHASE 2: MATH FEATURING LAYER & GREEKS COMPUTATION
