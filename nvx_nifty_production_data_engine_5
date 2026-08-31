@@ -363,10 +363,10 @@ if "sentiment_lock" not in globals():
 # =====================================================================
 # ⚙️ 1. INFRASTRUCTURE MATRIX & SECURITY CREDENTIALS REGISTRY
 # =====================================================================
-API_KEY = "vVR3fkdN"
-USER_ID = "U92913"
-PASSWORD = "2531"
-TOTP_TOKEN = "V47A2RXGVVKDCAJ6RFSZXS5JZ4"
+API_KEY = YOUR_API_KEY
+USER_ID = YOUR_USER_ID
+PASSWORD = YOUR_PASSWORD
+TOTP_TOKEN = YOUR_TOTP_TOKEN
 
 # Lookback tuning windows for linear mathematical ring buffers
 LOOKBACK_WINDOWS = {
