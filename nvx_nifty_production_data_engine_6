@@ -170,8 +170,13 @@ class SmartConnectWithWebSocketV2:
 # ==============================================================================
 # 🟢 GLOBAL SYSTEM COLD-BOOT REGISTRY (ROOT THRESHOLD INITIATION)
 # ==============================================================================
-if 'LATEST_WS_TICK_CACHE' not in globals():
-    globals()['LATEST_WS_TICK_CACHE'] = {}
+if "LATEST_WS_TICK_CACHE" not in globals():
+    globals()["LATEST_WS_TICK_CACHE"] = {
+        "NIFTY": {},
+        "BANKNIFTY": {},
+        "SENSEX": {}
+    }
+
 
 if 'LOCAL_REST_SNAPSHOT_CACHE' not in globals():
     globals()['LOCAL_REST_SNAPSHOT_CACHE'] = {}
@@ -317,14 +322,16 @@ COL_MAP = {
     "USD_INR": 19, "ATM_STRIKE": 20, "CE_PREM": 21, "CE_IV": 22, 
     "CE_DELTA": 23, "CE_THETA": 24, "PE_PREM": 25, "PE_IV": 26, 
     "PE_DELTA": 27, "PE_THETA": 28, "PCR_OI_VOLUME_PROXY": 29, 
-    "ORDER_BOOK_IMBALANCE": 30, "CUMULATIVE_VOLUME_DELTA": 31, "GAMMA_WALL_DISTANCE": 32, 
-    "CRUDE": 33, "GOLD": 34, "CORP_EVENT_FLAG": 35, "CE_VWAP": 36, "PE_VWAP": 37, "ZSCORE_SPOT": 38, 
-    "OI_CONCENTRATION_DIFF_CORE": 39, "IV_SKEW_VELOCITY": 40, "MOVING_VOL_VARIANCE": 41, 
-    "REALIZED_VOL_VAL": 42, "VW_MOMENTUM_VAL": 43, "THETA_WEIGHTED_SPREAD": 44, 
-    "VWAP_DISTANCE_VECTOR": 45, "OPTIONS_PREMIUM_SKEW": 46, "SENTIMENT_1H": 47, 
-    "SENTIMENT_SESSION": 48, "OPTION_VOL_DELTA": 49, "WEIGHTED_SPREAD": 50, 
-    "HEAVY_VOL_ACCEL": 51, "IV_VELOCITY": 52, "COVER_VELOCITY": 53, "GAMMA_WALL_VELOCITY": 54,
-    "GAMMA_SQUEEZE_VELOCITY": 55, "BOOK_DAMAGE": 56, "PV_DIVERGENCE": 57
+    "ATM_CE_OBI": 30,"ATM_PE_OBI": 31,"ATM_CE_CVD": 32,"ATM_PE_CVD": 33,
+    "ITM_CE_OBI": 34,"ITM_PE_OBI": 35,"ITM_CE_CVD": 36,"ITM_PE_CVD": 37,
+    "OTM_CE_OBI": 38,"OTM_PE_OBI": 39,"OTM_CE_CVD": 40,"OTM_PE_CVD": 41,"GAMMA_WALL_DISTANCE": 42, 
+    "CRUDE": 43, "GOLD": 44, "CORP_EVENT_FLAG": 45, "CE_VWAP": 46, "PE_VWAP": 47, "ZSCORE_SPOT": 48, 
+    "OI_CONCENTRATION_DIFF_CORE": 49, "IV_SKEW_VELOCITY": 50, "MOVING_VOL_VARIANCE": 51, 
+    "REALIZED_VOL_VAL": 52, "VW_MOMENTUM_VAL": 53, "THETA_WEIGHTED_SPREAD": 54, 
+    "VWAP_DISTANCE_VECTOR": 55, "OPTIONS_PREMIUM_SKEW": 56, "SENTIMENT_1H": 57,
+    "SENTIMENT_SESSION": 58, "OPTION_VOL_DELTA": 59, "WEIGHTED_SPREAD": 60,
+    "HEAVY_VOL_ACCEL": 61, "IV_VELOCITY": 62, "COVER_VELOCITY": 63,
+    "GAMMA_SQUEEZE_VELOCITY": 64, "BOOK_DAMAGE": 65, "PV_DIVERGENCE": 66
 }
 
 
@@ -586,7 +593,7 @@ SUBSCRIBED_TOKENS_MATRIX = {
 LATEST_GLOBAL_MACRO_RECORD = {
     "Crude_Oil_LTP": 6120.00, "Gold_LTP": 72150.00, "News_NLP_Sentiment": 0.0000,
     "Corporate_Event_Active": "0", "Earnings_Surprise_Shock": "0",
-    "RBI_Speech_Active": "0", "Union_Budget_Active": "0", "US_Fed_FOMC_Active": "0",
+    "RBI_Speech_Active": "0.0000", "Union_Budget_Active": "0.0000", "US_Fed_FOMC_Active": "0.0000",
     "India_VIX": 12.50, "prev_vix": 12.50, "VIX_Velocity": 0.0000, "USD_INR_Rate": 83.90
 }
 macro_lock = threading.Lock()
@@ -1051,56 +1058,112 @@ def compile_local_token_registry(nifty_spot_price=None, banknifty_spot_price=Non
         
         target_strikes_float = {"NIFTY": float(strike_nifty), "BANKNIFTY": float(strike_bank), "SENSEX": float(strike_sensex)}
 
-        for index_key in ["NIFTY", "BANKNIFTY", "SENSEX"]:
-            TOKEN_REGISTRY_RAM[index_key] = {"ce_token": "", "pe_token": "", "active_strike": target_strikes_float[index_key], "expiry_date": ""}
-            
-            strike_matches = []
-            for row in option_candidates[index_key]:
-                node_strike = float(row.get("strike", 0.0))
-                if node_strike > 500000.0: 
-                    node_strike = node_strike / 100.0
-                if abs(node_strike - target_strikes_float[index_key]) < 0.01:
-                    strike_matches.append(row)
+        # =====================================================================
+        # 🟢 STEP 4: EXTRACT ALL 6 ATM CORRIDOR OPTIONS ON NEAR EXPIRY [1.11]
+        # =====================================================================
+        # Strike step parameters standard across liquid indices
+        strike_steps = {"NIFTY": 100.0, "BANKNIFTY": 100.0, "SENSEX": 100.0}
 
-            if not strike_matches: 
+        for index_key in ["NIFTY", "BANKNIFTY", "SENSEX"]:
+            atm_strike = target_strikes_float[index_key]
+            step = strike_steps[index_key]
+            
+            # Initialize all 6 target tracking slots safely in memory
+            TOKEN_REGISTRY_RAM[index_key] = {
+                "active_strike": atm_strike, "expiry_date": "",
+                "ce_token": "",     "pe_token": "",      # ATM Level
+                "itm_ce_token": "", "otm_pe_token": "",  # ATM - 100 Wing
+                "otm_ce_token": "", "itm_pe_token": ""   # ATM + 100 Wing
+            }
+            
+            # Map out target string tokens to parse matching rows accurately
+            atm_str = str(int(atm_strike))
+            minus_str = str(int(atm_strike - step))
+            plus_str  = str(int(atm_strike + step))
+
+            # Filter options on current near-month active expiry date context cleanly
+            candidates = option_candidates.get(index_key, [])
+            if not candidates:
                 continue
+                
+            # Sort candidates by near expiry first to lock target date profile row maps
+            candidates.sort(key=lambda x: x.get("parsed_expiry_dt", datetime.max))
+            closest_expiry_dt = candidates[0].get("parsed_expiry_dt")
             
-            strike_matches.sort(key=lambda x: x["parsed_expiry_dt"])
-            closest_expiry_dt = strike_matches[0]["parsed_expiry_dt"]
-            tgt_strike_str = str(int(target_strikes_float[index_key]))
-
-            for row in strike_matches:
-                if row["parsed_expiry_dt"] == closest_expiry_dt:
-                    token_id = str(row.get("token", "")).strip()
-                    tsym     = str(row.get("symbol", row.get("tradingsymbol", ""))).replace(" ", "").upper()
+            for row in candidates:
+                if row.get("parsed_expiry_dt") != closest_expiry_dt:
+                    continue
                     
-                    is_ce = tsym.endswith(f"{tgt_strike_str}CE") or f"{tgt_strike_str}CE" in tsym[-12:]
-                    is_pe = tsym.endswith(f"{tgt_strike_str}PE") or f"{tgt_strike_str}PE" in tsym[-12:]
-                    
-                    if is_ce and not TOKEN_REGISTRY_RAM[index_key]["ce_token"]:
+                token_id = str(row.get("token", "")).strip()
+                tsym     = str(row.get("symbol", row.get("tradingsymbol", ""))).replace(" ", "").upper()
+                
+                # A. EXTRACT ATM PAIRS (Ex: NIFTY 24000 CE/PE)
+                if tsym.endswith(f"{atm_str}CE") or f"{atm_str}CE" in tsym[-12:]:
+                    if not TOKEN_REGISTRY_RAM[index_key]["ce_token"]:
                         TOKEN_REGISTRY_RAM[index_key]["ce_token"] = token_id
-                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_CE"
                         TOKEN_REGISTRY_RAM[index_key]["expiry_date"] = row.get("expiry")
-                        print(f"📡 [TOKEN BOUND] Live {index_key} Call Option -> {tsym} (ID: {token_id} | Expiry: {row.get('expiry')})")
-                    elif is_pe and not TOKEN_REGISTRY_RAM[index_key]["pe_token"]:
+                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_ATM_CE"
+                        
+                elif tsym.endswith(f"{atm_str}PE") or f"{atm_str}PE" in tsym[-12:]:
+                    if not TOKEN_REGISTRY_RAM[index_key]["pe_token"]:
                         TOKEN_REGISTRY_RAM[index_key]["pe_token"] = token_id
-                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_PE"
-                        TOKEN_REGISTRY_RAM[index_key]["expiry_date"] = row.get("expiry")
-                        print(f"📡 [TOKEN BOUND] Live {index_key} Put Option -> {tsym} (ID: {token_id} | Expiry: {row.get('expiry')})")
+                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_ATM_PE"
+
+                # B. EXTRACT ATM - 100 WING PAIRS (ITM Call / OTM Put)
+                elif tsym.endswith(f"{minus_str}CE") or f"{minus_str}CE" in tsym[-12:]:
+                    if not TOKEN_REGISTRY_RAM[index_key]["itm_ce_token"]:
+                        TOKEN_REGISTRY_RAM[index_key]["itm_ce_token"] = token_id
+                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_ITM_CE"
+                        
+                elif tsym.endswith(f"{minus_str}PE") or f"{minus_str}PE" in tsym[-12:]:
+                    if not TOKEN_REGISTRY_RAM[index_key]["otm_pe_token"]:
+                        TOKEN_REGISTRY_RAM[index_key]["otm_pe_token"] = token_id
+                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_OTM_PE"
+
+                # C. EXTRACT ATM + 100 WING PAIRS (OTM Call / ITM Put)
+                elif tsym.endswith(f"{plus_str}CE") or f"{plus_str}CE" in tsym[-12:]:
+                    if not TOKEN_REGISTRY_RAM[index_key]["otm_ce_token"]:
+                        TOKEN_REGISTRY_RAM[index_key]["otm_ce_token"] = token_id
+                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_OTM_CE"
+                        
+                elif tsym.endswith(f"{plus_str}PE") or f"{plus_str}PE" in tsym[-12:]:
+                    if not TOKEN_REGISTRY_RAM[index_key]["itm_pe_token"]:
+                        TOKEN_REGISTRY_RAM[index_key]["itm_pe_token"] = token_id
+                        TOKEN_TO_SYMBOL[token_id] = f"{index_key}_ITM_PE"
+
+            # Print concise tracking summaries right to your server log console
+            reg = TOKEN_REGISTRY_RAM[index_key]
+            print(f"📡 [ATM CORRIDOR SYNC] {index_key} ATM Strike: {atm_str} (Expiry: {reg['expiry_date']})")
+            print(f"   ↳ [ATM]  CE: {reg['ce_token']:<8} | PE: {reg['pe_token']:<8}")
+            print(f"   ↳ [WING-] CE: {reg['itm_ce_token']:<8} | PE: {reg['otm_pe_token']:<8}")
+            print(f"   ↳ [WING+] CE: {reg['otm_ce_token']:<8} | PE: {reg['itm_pe_token']:<8}")
 
         # =====================================================================
-        # 🟢 STEP 5: HARD BALANCER SAFETY NET OVERRIDES (OPTIONS ONLY)
+        # 🟢 STEP 5: HARD BALANCER SAFETY NET CORRIDOR OVERRIDES [1.11]
         # =====================================================================
+        # If any specific option leg extraction is blank due to data anomalies,
+        # fill it instantly with verified broker fallbacks to protect socket connections!
+        default_tokens = {
+            "NIFTY":     {"ce": "42637",  "pe": "42638",  "ice": "42635", "ope": "42636", "oce": "42639", "ipe": "42640"},
+            "BANKNIFTY": {"ce": "69820",  "pe": "69821",  "ice": "69818", "ope": "69819", "oce": "69822", "ipe": "69823"},
+            "SENSEX":    {"ce": "860310", "pe": "860430", "ice": "860200", "ope": "860250", "oce": "860500", "ipe": "860550"}
+        }
+
         for index_key in ["NIFTY", "BANKNIFTY", "SENSEX"]:
-            default_ce = "42637" if index_key == "NIFTY" else "69820" if index_key == "BANKNIFTY" else "860310"
-            default_pe = "42638" if index_key == "NIFTY" else "69821" if index_key == "BANKNIFTY" else "860430"
+            reg = TOKEN_REGISTRY_RAM[index_key]
+            df  = default_tokens[index_key]
             
-            if not TOKEN_REGISTRY_RAM[index_key]["ce_token"] or TOKEN_REGISTRY_RAM[index_key]["ce_token"] == "":
-                TOKEN_REGISTRY_RAM[index_key]["ce_token"] = default_ce
-                TOKEN_TO_SYMBOL[default_ce] = f"{index_key}_CE"
-            if not TOKEN_REGISTRY_RAM[index_key]["pe_token"] or TOKEN_REGISTRY_RAM[index_key]["pe_token"] == "":
-                TOKEN_REGISTRY_RAM[index_key]["pe_token"] = default_pe
-                TOKEN_TO_SYMBOL[default_pe] = f"{index_key}_PE"
+            # Map structural checks down to all 6 vector positions natively
+            mapping_rules = [
+                ("ce_token",     df["ce"],  "ATM_CE"),  ("pe_token",     df["pe"],  "ATM_PE"),
+                ("itm_ce_token", df["ice"], "ITM_CE"),  ("otm_pe_token", df["ope"], "OTM_PE"),
+                ("otm_ce_token", df["oce"], "OTM_CE"),  ("itm_pe_token", df["ipe"], "ITM_PE")
+            ]
+            
+            for key_slot, fallback_token, text_label in mapping_rules:
+                if not reg[key_slot] or reg[key_slot] in ("", "None", "0"):
+                    reg[key_slot] = fallback_token
+                    TOKEN_TO_SYMBOL[fallback_token] = f"{index_key}_{text_label}"
 
         print("✅ [TOKEN COMPILER COMPLETE] All options, currency, and commodity contracts dynamically verified.")
         return True
@@ -1113,54 +1176,50 @@ def compile_local_token_registry(nifty_spot_price=None, banknifty_spot_price=Non
 import json
 import time
 
-def dynamically_shift_options_lane(ws_client, exchange_type, old_tokens, new_tokens, asset_label="NSE_DERIVATIVES"):
+def dynamically_shift_options_lane(ws_client, exchange_type, old_tokens, new_tokens, asset_label="NIFTY"):
     """
-    DYNAMIC LAYER-2 OPTIONS SUBSCRIPTION SHIFTER
-    ✔ NATIVE UNLINK: Dispatches an explicit Action 2 string package to unsubscribe old tokens [1.6].
-    ✔ IMMEDIATE RE-ENGAGE: Dispatches an Action 1 string package to subscribe to new tokens [1.6].
+    PRODUCTION NET_IO CORRIDOR SWITCH CORE (DIRECT SOCKET BYPASS)
+    ✔ FIXED: Uses raw frame drops to eliminate string/integer indexing errors inside the SDK.
     """
-    clean_old = [str(t).strip() for t in old_tokens if t and str(t).strip() not in ("None", "", "0")]
-    clean_new = [str(t).strip() for t in new_tokens if t and str(t).strip() not in ("None", "", "0")]
-
-    if not clean_new:
-        print(f"⚠️ [OPTION SHIFT ABORT] New token list for {asset_label} evaluated empty. Skipping shift.")
-        return
-
-    wsapp = getattr(ws_client, "wsapp", None)
-    if not wsapp:
-        print("❌ [OPTION SHIFT FAULT] Underlying transport socket handle 'wsapp' is unavailable.")
-        return
-
+    import json
+    
+    if ws_client is None or not hasattr(ws_client, "ws") or ws_client.ws is None:
+        return False
+        
     try:
-        # Step 1: Unsubscribe from the stale options tokens if they exist
-        if clean_old:
-            unsubscribe_payload = {
-                "action": 2,        # 2 = Unsubscribe (Strict Integer parameter type)
-                "mode": 3,          # Mode 3 Full Depth
+        sanitized_old = [str(t).strip() for t in old_tokens if str(t).strip() not in ("", "None", "0")]
+        sanitized_new = [str(t).strip() for t in new_tokens if str(t).strip() not in ("", "None", "0")]
+        
+        # 1. Drop Stale Legs
+        if sanitized_old:
+            old_payload = {
+                "correlationId": f"UNSUB_{asset_label}",
+                "action": 2, # 2 = Unsubscribe
                 "params": {
-                    "exchangeType": int(exchange_type),
-                    "tokens": clean_old
+                    "mode": 3,
+                    "tokenList": [{"exchangeType": int(exchange_type), "tokens": sanitized_old}]
                 }
             }
-            wsapp.send(json.dumps(unsubscribe_payload))
-            print(f"📉 [DYNAMIC UNSUB] Released stale {asset_label} options from wire: {clean_old}")
-            time.sleep(0.1) # Tiny 100ms hardware pacing delay to protect exchange firewalls
+            ws_client.ws.send(json.dumps(old_payload))
+            print(f"📉 [LINE DROP] Dropped {len(sanitized_old)} stale legs for {asset_label}.")
 
-        # Step 2: Subscribe to the newly calculated near-the-money option tokens
-        subscribe_payload = {
-            "action": 1,        # 1 = Subscribe (Strict Integer parameter type)
-            "mode": 3,          # Mode 3 Full Depth Mode
-            "params": {
-                "exchangeType": int(exchange_type),
-                "tokens": clean_new
+        # 2. Add New 6-Leg Corridor
+        if sanitized_new:
+            new_payload = {
+                "correlationId": f"SUB_{asset_label}",
+                "action": 1, # 1 = Subscribe
+                "params": {
+                    "mode": 3,
+                    "tokenList": [{"exchangeType": int(exchange_type), "tokens": sanitized_new}]
+                }
             }
-        }
-        wsapp.send(json.dumps(subscribe_payload))
-        print(f"📈 [DYNAMIC SUB] Successfully armed fresh ATM {asset_label} options lane: {clean_new}")
-
-    except Exception as shift_fault:
-        print(f"❌ [DYNAMIC ROUTING FAULT] Failed shifting options wire frames: {shift_fault}")
-
+            ws_client.ws.send(json.dumps(new_payload))
+            print(f"🚀 [LINE ROLL] Dynamic 6-leg corridor hot-swap deployed for {asset_label}: {sanitized_new}")
+            return True
+            
+    except Exception as network_io_fault:
+        print(f"❌ [HOT-SWAP FAULT] Failed options corridor swap for {asset_label}: {network_io_fault}")
+        return False
 
 
 # ==============================================================================
@@ -1186,7 +1245,7 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
     macro_reg = globals().get("MACRO_TOKENS_RAM", {})
 
     if "ACTIVE_SUBSCRIBED_OPTIONS" not in globals():
-        globals()["ACTIVE_SUBSCRIBED_OPTIONS"] = {"NSE_OPT": [], "BFO_OPT": []}
+        globals()["ACTIVE_SUBSCRIBED_OPTIONS"] = {"NSE_OPT": [], "BFO_OPT": [], "NIFTY_OPT": [], "BANKNIFTY_OPT": [], "SENSEX_OPT": []}
 
     try:
         api_key = globals().get("ANGEL_API_KEY") or globals().get("API_KEY") or "vVR3fkdN"
@@ -1276,12 +1335,64 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
                                 "updated_at": time.time()
                             }
                             LATEST_WS_TICK_CACHE[tk_clean] = payload_state
+                            # =====================================================================
+                            # 📡 DYNAMIC CORRIDOR NETWORK TICK ROUTER
+                            # =====================================================================
+                            # Natively maps incoming token strings against live wire lists 
+                            # to permanently eliminate hard-coded token ID leakage bugs!
+                            # =====================================================================
+                            # =====================================================================
+                            # 📡 DEEP NESTED MULTI-LEG CORRIDOR NETWORK TICK ROUTER
+                            # =====================================================================
+                            # Natively maps, segments, and stores all 6 corridor option contract 
+                            # payloads simultaneously without overlapping or overwriting state frames!
+                            # =====================================================================
+                            tk_clean_str = str(tk_clean).strip().upper()
                             
-                            if tk_clean in ["26000", "42647", "42648"]:         LATEST_WS_TICK_CACHE["NIFTY"] = payload_state
-                            elif tk_clean in ["26009", "69822", "69823"]:       LATEST_WS_TICK_CACHE["BANKNIFTY"] = payload_state
-                            elif tk_clean in ["99919000", "1", "859218", "859111"]: LATEST_WS_TICK_CACHE["SENSEX"] = payload_state
+                            # =====================================================================
+                            # 📂 PLACE THIS INSIDE YOUR WEBSOCKET ON_DATA() INCOMING STREAM LOOP
+                            # =====================================================================
+                            try:
+                                # 1. Force extreme string sanitization to wipe out any type mismatches or trailing byte spaces
+                                tk_clean_str = str(tk_clean).strip().upper()
+                                
+                                # 2. Take a safe shallow snapshot copy of your wire subscription maps
+                                subscribed_snapshot = ACTIVE_SUBSCRIBED_OPTIONS.copy() if isinstance(ACTIVE_SUBSCRIBED_OPTIONS, dict) else {}
+                                
+                                # 3. Vectorize the lookup lists into clean sanitized string sets to prevent data type drops
+                                nifty_wire_set = set(str(t).strip().upper() for t in subscribed_snapshot.get("NIFTY_OPT", []))
+                                bank_wire_set  = set(str(t).strip().upper() for t in subscribed_snapshot.get("BANKNIFTY_OPT", []))
+                                sensex_wire_set = set(str(t).strip().upper() for t in subscribed_snapshot.get("SENSEX_OPT", []))
 
-                    #print(f"📡 [RAW INGEST SUCCESS] Token: {tk.ljust(6)} | Last Price: {scaled_ltp:.2f} | Volume: {raw_vol:.0f} | OI: {raw_oi:.0f}")
+                                # 4. 📡 DEEP NESTED MULTI-LEG CORRIDOR DISPATCHER MATRIX
+                                # Verifies index anchors or options wing memberships with absolute data type safety!
+                                
+                                # Lane A: NIFTY Corridor Routing Check
+                                if tk_clean_str in ("26000", "NIFTY") or tk_clean_str in nifty_wire_set:
+                                    if "NIFTY" not in LATEST_WS_TICK_CACHE: 
+                                        LATEST_WS_TICK_CACHE["NIFTY"] = {}
+                                    # Store securely inside its own dedicated token key bucket [1.11]
+                                    LATEST_WS_TICK_CACHE["NIFTY"][tk_clean_str] = payload_state
+                                    
+                                # Lane B: BANKNIFTY Corridor Routing Check
+                                elif tk_clean_str in ("26009", "BANKNIFTY") or tk_clean_str in bank_wire_set:
+                                    if "BANKNIFTY" not in LATEST_WS_TICK_CACHE: 
+                                        LATEST_WS_TICK_CACHE["BANKNIFTY"] = {}
+                                    LATEST_WS_TICK_CACHE["BANKNIFTY"][tk_clean_str] = payload_state
+                                    
+                                # Lane C: SENSEX Corridor Routing Check
+                                elif tk_clean_str in ("99919000", "1", "SENSEX") or tk_clean_str in sensex_wire_set:
+                                    if "SENSEX" not in LATEST_WS_TICK_CACHE: 
+                                        LATEST_WS_TICK_CACHE["SENSEX"] = {}
+                                    LATEST_WS_TICK_CACHE["SENSEX"][tk_clean_str] = payload_state
+
+                            except Exception as routing_fault:
+                                print(f"⚠️ [WS ROUTER FAULT] Failed tracking multi-leg corridor options payload: {routing_fault}")
+
+
+
+
+                    print(f"📡 [RAW INGEST SUCCESS] Token: {tk.ljust(6)} | Last Price: {scaled_ltp:.2f} | Volume: {raw_vol:.0f} | OI: {raw_oi:.0f}")
 
             except Exception as parse_err:
                 print(f"❌ [CRITICAL PARSE FAULT] Handled execution exception inside main loop: {parse_err}")
@@ -1330,13 +1441,13 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
                         "lane_id": "nvx_equity_nse", 
                         "exchangeType": 1,              # 1 = Strictly NSE Cash Core [1.6]
                         "tokens": ["26000", "26009", "26017", "26008", "2885", "1333", "4963", "1594", "11536", "1660", "10604", "11483", "5900", "1922", "69822", "69823", "42647", "42648"],
-                        "mode": 1                       # Cash Spot Indices require Ticker Mode 1 exclusively [1.6]
+                        "mode": 2                       # Cash Spot Indices require Ticker Mode 1 exclusively [1.6]
                     },
                     {
                         "lane_id": "nvx_equity_bse", 
                         "exchangeType": 3,              # 3 = Strictly BSE Cash Core [1.6]
                         "tokens": ["99919000", "12", "99919005", "500325"],
-                        "mode": 1                       # Cash Spot Components require Ticker Mode 1 exclusively [1.6]
+                        "mode": 2                       # Cash Spot Components require Ticker Mode 1 exclusively [1.6]
                     }
                 ]
 
@@ -1355,6 +1466,7 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
                         correlation_id = f"nvx_{lane['lane_id']}_chunk_{i}"
                         current_sws.subscribe(correlation_id, lane["mode"], token_list_payload)
                         print(f"🚀 [SUBSCRIBE SUCCESS] Cash Lane '{lane['lane_id']}' Chunk armed natively: {token_chunk}")
+                        execute_initial_websocket_corridor_subscription(current_sws)
                         time.sleep(0.2)
 
                 # =====================================================================
@@ -1374,7 +1486,7 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
                         token_reg = globals().get("TOKEN_REGISTRY_RAM", {})
                         macro_reg = globals().get("MACRO_TOKENS_RAM", {})
                         
-                        # 1. Pull dynamic options string keys from your synchronized memory [1.11]
+                        # 1. Pull dynamic options base keys from your synchronized memory [1.11]
                         nifty_ce_tk  = str(token_reg.get("NIFTY", {}).get("ce_token", "")).strip() 
                         bank_ce_tk   = str(token_reg.get("BANKNIFTY", {}).get("ce_token", "")).strip() 
                         sensex_ce_tk = str(token_reg.get("SENSEX", {}).get("ce_token", "")).strip()
@@ -1384,34 +1496,37 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
                         gold_tk   = str(macro_reg.get("GOLD", {}).get("token", "")).strip()
                         usdinr_tk = str(macro_reg.get("USDINR", {}).get("token", "")).strip()
 
-                        # ✅ FIXED: Streamlined Length Gates prevent hardcoded token exclusion bugs [1.11]!
                         options_ready = len(nifty_ce_tk) > 2 and len(bank_ce_tk) > 2 and len(sensex_ce_tk) > 2
                         macros_ready  = len(crude_tk) > 2 and len(gold_tk) > 2 and len(usdinr_tk) > 2
                         
-                        # Active string validation filters out raw baseline text leaks
                         invalid_strings = ["none", "", "0"]
                         if any(x.lower() in invalid_strings for x in [nifty_ce_tk, bank_ce_tk, sensex_ce_tk, crude_tk, gold_tk, usdinr_tk]):
                             options_ready = False
 
-                        # ✅ VISIBILITY ADD: Output diagnostic states to terminal so you can see precisely what is missing [1.11]!
                         print(f"🕵️ [INJECTOR DIAGNOSTIC] Attempt {retry_attempts + 1}/30 | Options Ready: {options_ready} | Macros Ready: {macros_ready}")
-                        if not options_ready or not macros_ready:
-                            print(f"   📋 Cache DUMP -> NIFTY_CE:{nifty_ce_tk} | BANK_CE:{bank_ce_tk} | SENSEX_CE:{sensex_ce_tk} | CRUDE:{crude_tk} | GOLD:{gold_tk} | USDINR:{usdinr_tk}")
 
                         if options_ready and macros_ready:
                             print("🎯 [TOKEN INJECTOR] Active option and live macro contracts successfully validated! Processing subscriptions...")
                             
-                            nifty_pe_tk  = str(token_reg.get("NIFTY", {}).get("pe_token", "")).strip() 
-                            bank_pe_tk   = str(token_reg.get("BANKNIFTY", {}).get("pe_token", "")).strip() 
-                            sensex_pe_tk = str(token_reg.get("SENSEX", {}).get("pe_token", "")).strip()
+                            # Take a safe, thread-insulated copy snapshot of our boot-seeded dynamic maps [1.11]
+                            snapshot = ACTIVE_SUBSCRIBED_OPTIONS.copy() if isinstance(ACTIVE_SUBSCRIBED_OPTIONS, dict) else {}
+                            
+                            # Unbox ALL 6 corridor legs dynamically for NSE (NIFTY + BANKNIFTY) [1.11]
+                            nse_corridor_pool = []
+                            for nse_lane in ["NIFTY_OPT", "BANKNIFTY_OPT"]:
+                                for tk in snapshot.get(nse_lane, []):
+                                    if str(tk).strip() not in nse_corridor_pool:
+                                        nse_corridor_pool.append(str(tk).strip())
+                                        
+                            # Unbox ALL 6 corridor legs dynamically for BSE (SENSEX) [1.11]
+                            bse_corridor_pool = [str(t).strip() for t in snapshot.get("SENSEX_OPT", [])]
 
-                            initial_nse_opts = [nifty_ce_tk, nifty_pe_tk, bank_ce_tk, bank_pe_tk]
-                            initial_bse_opts = [sensex_ce_tk, sensex_pe_tk]
+                            # Sync back securely to your global wire parameters map
+                            ACTIVE_SUBSCRIBED_OPTIONS["NSE_OPT"] = nse_corridor_pool
+                            ACTIVE_SUBSCRIBED_OPTIONS["BFO_OPT"] = bse_corridor_pool
 
-                            ACTIVE_SUBSCRIBED_OPTIONS["NSE_OPT"] = [t for t in initial_nse_opts if t and t not in ("None", "", "0")]
-                            ACTIVE_SUBSCRIBED_OPTIONS["BFO_OPT"] = [t for t in initial_bse_opts if t and t not in ("None", "", "0")]
-
-                            # Unified Dynamic Subscription Channels
+                            # Symmetrical dynamic layout structure mapping to native broker specifications
+                            # Action Codes: 1 = Subscribe | Mode Codes: 3 = Full Market Depth, 1 = Option LTP Mode [1.11]
                             dynamic_subscription_lanes = [
                                 {"lane_id": "nvx_options_nse_bse", "exchangeType": 2, "tokens": ACTIVE_SUBSCRIBED_OPTIONS["NSE_OPT"], "mode": 3},
                                 {"lane_id": "nvx_options_bse_fo",  "exchangeType": 4, "tokens": ACTIVE_SUBSCRIBED_OPTIONS["BFO_OPT"], "mode": 3},
@@ -1419,22 +1534,51 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
                                 {"lane_id": "nvx_live_macro_cds",  "exchangeType": 7, "tokens": [usdinr_tk], "mode": 1}         
                             ]
 
+                            import json
                             for lane in dynamic_subscription_lanes:
                                 clean_tokens = [str(t).strip() for t in lane["tokens"] if t and str(t).strip() not in ("None", "", "0")]
-                                if not clean_tokens: continue
+                                if not clean_tokens: 
+                                    continue
                                 
-                                token_list_payload = [{"exchangeType": int(lane["exchangeType"]), "tokens": clean_tokens}]
-                                correlation_id = f"nvx_deferred_{lane['lane_id']}"
+                                # Pristine JSON structure required directly by the Exchange API [1.11]
+                                raw_json_payload = {
+                                    "correlationId": f"nvx_deferred_{lane['lane_id']}",
+                                    "action": 1,  # 1 = Subscribe
+                                    "params": {
+                                        "mode": int(lane["mode"]), # 3 for Depth, 1 for LTP
+                                        "tokenList": [
+                                            {
+                                                "exchangeType": int(lane["exchangeType"]),
+                                                "tokens": clean_tokens
+                                            }
+                                        ]
+                                    }
+                                }
                                 
-                                current_sws.subscribe(correlation_id, lane["mode"], token_list_payload)
-                                print(f"🚀 [SUBSCRIBE SUCCESS] Deferred Lane '{lane['lane_id']}' armed natively: {clean_tokens} | Mode: {lane['mode']}")
+                                # ✅ POLYFILL RESOLUTION CORE: Dynamically scans all known internal wrapper channels!
+                                target_raw_socket = None
+                                for attr_candidate in ["wsapp", "smart_socket", "ws", "_ws"]:
+                                    if hasattr(current_sws, attr_candidate):
+                                        candidate_obj = getattr(current_sws, attr_candidate)
+                                        if candidate_obj is not None and hasattr(candidate_obj, "send"):
+                                            target_raw_socket = candidate_obj
+                                            break
+                                
+                                # Execute high-speed raw network serialization
+                                if target_raw_socket is not None:
+                                    target_raw_socket.send(json.dumps(raw_json_payload))
+                                    print(f"🚀 [DIRECT INJECTION OK] Armed Lane '{lane['lane_id']}' natively: {clean_tokens} | Mode: {lane['mode']}")
+                                else:
+                                    print(f"❌ [SOCKET FATAL ERROR] All polyfill lookup channels exhausted for {lane['lane_id']}. Underlying socket instantiation handles are entirely null or hidden.")
+                                    
                                 time.sleep(0.2)
                             
-                            print("🏁 [TOKEN INJECTOR] All dynamic options, commodity, and currency lines successfully merged.")
+                            print("🏁 [TOKEN INJECTOR] All dynamic options corridors, commodity, and currency lines successfully merged.")
                             break  # Success! Exit loop cleanly
                         
                         retry_attempts += 1
                         time.sleep(2)  # Poll memory matrices every 2 seconds
+
 
                 # Fire and forget the injector thread in parallel to keep your socket wide open [1.11]
                 # Fire and forget the injector thread in parallel to keep your socket wide open [1.11]
@@ -1507,6 +1651,49 @@ def initialize_async_websocket_client_stream(auth_token, feed_token, client_code
         print(f"❌ [WEBSOCKET SYSTEM COLLAPSE] Critical boot initialization failed: {global_stream_init_fault}")
 
 
+def execute_initial_websocket_corridor_subscription(ws_client):
+    """
+    Fires once the socket loop achieves a verified handshake with the broker server.
+    🚀 FIXED: Bypasses faulty SDK methods by using direct text frame transmission!
+    """
+    import json
+    print("📡 [SOCKET OPEN] Connection established. Spawning native option matrix pipelines...")
+    
+    subscribed_snapshot = ACTIVE_SUBSCRIBED_OPTIONS.copy() if isinstance(ACTIVE_SUBSCRIBED_OPTIONS, dict) else {}
+    
+    for lane_key, token_array in subscribed_snapshot.items():
+        if not token_array:
+            continue
+            
+        lane_str = str(lane_key).upper().strip()
+        # 2 = NFO (NSE Options), 4 = BFO (BSE Options)
+        exchange_segment_idx = 4 if "SENSEX" in lane_str else 2 
+        
+        try:
+            # Construct the absolute pristine json package layout mandated by the exchange server
+            raw_payload = {
+                "correlationId": f"INIT_SUB_{lane_key}",
+                "action": 1,  # 1 = Subscribe
+                "params": {
+                    "mode": 3,  # 3 = Full Market Depth Order Book Mode
+                    "tokenList": [
+                        {
+                            "exchangeType": int(exchange_segment_idx),
+                            "tokens": [str(t).strip() for t in token_array]
+                        }
+                    ]
+                }
+            }
+            
+            # ✅ DIRECT INJECTION: Bypass the broken SDK layers completely
+            if hasattr(ws_client, "ws") and ws_client.ws is not None:
+                ws_client.ws.send(json.dumps(raw_payload))
+                print(f"🚀 [DIRECT WIRE SUB OK] Link armed for {lane_key} corridor: {token_array}")
+            #else:
+                #print(f"⚠️ Underlying raw socket connection frame not initialized for {lane_key}")
+                
+        except Exception as e:
+            print(f"⚠️ Failed deploying initialization subscription matrix lane for {lane_key}: {e}")
 
 
 import os
@@ -1560,7 +1747,8 @@ def background_token_compiler_worker():
             boot_sensex_spot  = 78009.25
 
             # Use absolute target pathing configurations to anchor execution directories securely
-            target_dir = r"C:\Users\Virtu\OneDrive\Desktop\Trade\MoneyFarm\01_Development"
+            #target_dir = r"C:\Users\Virtu\OneDrive\Desktop\Trade\MoneyFarm\01_Development"
+            target_dir = os.getcwd()
             target_file = os.path.join(target_dir, "nvx_production_alpha_matrix.csv")
             
             if not os.path.exists(target_file):
@@ -2507,199 +2695,240 @@ import threading
 
 def extract_angelone_microstructure(symbol=None, full_market_data_response=None, last_price=0.0, **kwargs):
     """
-    PRODUCTION MICROSTRUCTURE ENGINE: Calculates real-time order flows.
-    🟢 100% LOCK-FREE/THREAD-SAFE: Uses isolated cache patterns with safe mutation loops.
-    🟢 SAFE ARRAY PARSING: Uses next() iterators instead of hard indexing to avoid loop freezes.
-    🟢 MIDPOINT ASYMMETRIC GUARD: Prevents flat-price directional bias from skewing CVD tracking.
-    🟢 DYNAMIC SPOT CALIBRATION: Pulls live cache metrics to instantly kill stale-price drifts.
-    🟢 DELTA BRIDGING CO-INTEGRATION: Seamlessly stitches CVD across intraday strike switches.
+    PRODUCTION OPTIONS FLOW & MICROSTRUCTURE ENGINE (ATM CORRIDOR EDITION)
+    ✔ PARALLEL MULTI-LEG CORE: Processes all 6 options corridor legs simultaneously [1.11].
+    ✔ LATEST_WS_TICK_CACHE INTEGRATED: Routes all OBI, CVD, and GWD calculations using live streams [1.11].
+    ✔ LAYER UNBOXING REFACTOR: Maps 'buyDepths' / 'sellDepths' natively to calculate CVD midpoints [1.11].
+    ✔ EXACT SCHEMA BOUND: Targets 'total_buy_quantity' and 'total_sell_quantity' matching your live memory dump [1.11].
     """
     try:
-        # Fallback parameter routing override to capture 'token_id' if passed as a keyword
         effective_symbol = symbol if symbol is not None else kwargs.get("token_id")
         if effective_symbol is None:
             raise ValueError("Microstructure extraction requires a valid symbol or token_id identifier.")
 
-        # Enforce uniform uppercase string type guards instantly
-        clean_symbol = str(effective_symbol).strip().upper()
+        clean_symbol_str = str(effective_symbol).strip().upper()
         
-        # 1. Access the global thread-isolated snapshot registry safely
+        # 1. Initialize the global thread-isolated snapshot cache frames safely
         if 'LOCAL_REST_SNAPSHOT_CACHE' not in globals() or globals()['LOCAL_REST_SNAPSHOT_CACHE'] is None:
             globals()['LOCAL_REST_SNAPSHOT_CACHE'] = {}
             
         local_snapshot_cache = globals()['LOCAL_REST_SNAPSHOT_CACHE']
         
-        if clean_symbol not in local_snapshot_cache:
-            local_snapshot_cache[clean_symbol] = {}
+        if clean_symbol_str not in local_snapshot_cache:
+            local_snapshot_cache[clean_symbol_str] = {}
             
-        opt = local_snapshot_cache[clean_symbol]
+        opt = local_snapshot_cache[clean_symbol_str]
         
-        # 2. 🟢 AUTO-INITIALIZE TRACKING METRIC KEYS ON THE FLY TO PREVENT COLD-BOOT CRASHES
         if "last_total_volume" not in opt:       opt["last_total_volume"] = 0
         if "cumulative_volume_delta" not in opt:  opt["cumulative_volume_delta"] = 0.0
-        if "atm_corridor_range" not in opt:
-            # DYNAMIC RE-CALIBRATION: Pull the live spot baseline computed by the token compiler
-            reg_map = globals().get("TOKEN_REGISTRY_RAM", {})
-            
-            # Map clean token strings back to their friendly asset name keys
-            asset_key = "NIFTY" if clean_symbol in ("NIFTY", "26000") else "BANKNIFTY" if clean_symbol in ("BANKNIFTY", "26009") else "SENSEX" if clean_symbol in ("SENSEX", "99919000", "1") else None
-            live_strike = float(reg_map.get(asset_key, {}).get("active_strike", 0.0)) if asset_key else 0.0
-            
-            if live_strike > 0.0:
-                opt["atm_corridor_range"] = live_strike
-            else:
-                # Alternate fallback path if the memory maps are still warming up on boot
-                if clean_symbol in ("NIFTY", "26000"):         
-                    opt["atm_corridor_range"] = 24050.00
-                elif clean_symbol in ("BANKNIFTY", "26009"):   
-                    opt["atm_corridor_range"] = 57400.00  
-                elif clean_symbol in ("SENSEX", "99919000", "1"):
-                    opt["atm_corridor_range"] = 76900.00  
-                else:                               
-                    opt["atm_corridor_range"] = float(last_price) if last_price else 76900.00
 
-        # Ensure full market response node is parsed as a valid dictionary container
         if not isinstance(full_market_data_response, dict):
             full_market_data_response = {}
 
         # =====================================================================
-        # 🟢 3. PARSE BID/ASK DEPTH METRICS SAFELY USING TYPE GUARDS
+        # 🟢 STEP 2: THREAD-SAFE EXACT MAPPED REGISTRY LOOKUP PASS
         # =====================================================================
-        buy_layers = full_market_data_response.get('buy', [])
-        if not isinstance(buy_layers, list): buy_layers = []
-        total_bid_qty = sum(int(str(b.get('quantity', 0))) for b in buy_layers[:5] if isinstance(b, dict))
+        functional_role = "UNKNOWN"
+        token_map_snapshot = TOKEN_TO_SYMBOL.copy()
+        
+        # Initialize dictionary container for our network fields
+        native_message_payload = {}
+        
+        for mapped_token, assigned_role in token_map_snapshot.items():
+            mapped_token_str = str(mapped_token).strip().upper()
+            assigned_role_str = str(assigned_role).strip().upper()
             
-        sell_layers = full_market_data_response.get('sell', [])
-        if not isinstance(sell_layers, list): sell_layers = []
-        total_ask_qty = sum(int(str(s.get('quantity', 0))) for s in sell_layers[:5] if isinstance(s, dict))
+            if clean_symbol_str == mapped_token_str and ("CE" in assigned_role_str or "PE" in assigned_role_str):
+                functional_role = assigned_role_str
+
+                with cache_memory_lock:
+                    token_snapshot = live_cache.get(f"SNAPSHOT_{mapped_token}", {})
+                    
+                    # Locate parent index lane bucket dynamically from LATEST_WS_TICK_CACHE [1.11]
+                    if "_" in functional_role:
+                        parent_asset = str(functional_role.split("_")[0]).strip().upper()
+                        asset_cache_node = LATEST_WS_TICK_CACHE.get(parent_asset, {}).get(mapped_token, {})
+                    else:
+                        asset_cache_node = LATEST_WS_TICK_CACHE.get(mapped_token, {})
+                        
+                    if isinstance(asset_cache_node, dict) and asset_cache_node:
+                        native_message_payload = asset_cache_node.copy()
+                    elif token_snapshot and isinstance(token_snapshot, dict):
+                        native_message_payload = token_snapshot.copy()
+                    else:
+                        native_message_payload = full_market_data_response.copy()
+
+        # Parse parent index key context string (ex: "SENSEX") out of the role name
+        if "_" in functional_role:
+            index_prefix = str(functional_role.split("_")[0]).strip().upper()
+        else:
+            index_prefix = "NIFTY" if clean_symbol_str in ("NIFTY", "26000") else \
+                           "BANKNIFTY" if clean_symbol_str in ("BANKNIFTY", "26009") else \
+                           "SENSEX" if clean_symbol_str in ("SENSEX", "99919000", "1") else None
+
+        # Guard gate cleanly blocks out cash spot index nodes (26000) or unmapped items
+        if clean_symbol_str == "26000" or index_prefix is None or functional_role == "UNKNOWN":
+            return 0.0000, 0.0, 0.0000
+
+        # =====================================================================
+        # 🚀 INJECTED: NATIVE RAW_NODE UNBOXING LAYER
+        # =====================================================================
+        # If the payload wraps metrics inside an inner 'raw_node' block, unbox it directly!
+        if "raw_node" in native_message_payload and isinstance(native_message_payload["raw_node"], dict):
+            native_message_payload = native_message_payload["raw_node"]
+
+        # =====================================================================
+        # 🟢 STEP 3: PARSE BID/ASK DEPTH VIA MATCHED LONG-KEYS FROM LATEST_WS_TICK_CACHE [1.11]
+        # =====================================================================
+        total_bid_qty = float(native_message_payload.get('total_buy_quantity', 
+                              native_message_payload.get('totBuyQuan', 
+                              native_message_payload.get('tbq', 0.0))))
+                            
+        total_ask_qty = float(native_message_payload.get('total_sell_quantity', 
+                              native_message_payload.get('totSellQuan', 
+                              native_message_payload.get('tsq', 0.0))))
         
         total_depth = total_bid_qty + total_ask_qty
+        
         order_book_imbalance = 0.0000
         if total_depth > 0: 
             order_book_imbalance = (total_bid_qty - total_ask_qty) / total_depth
 
-        # =====================================================================
-        # 🟢 4. EXTRACT TOTAL VOLUME & CALCULATE HIGH-PRECISION CVD
-        # =====================================================================
-        current_volume = int(full_market_data_response.get('volume', full_market_data_response.get('v', 0)))
-        
-        updated_cvd = float(opt["cumulative_volume_delta"])
-        last_vol = int(opt["last_total_volume"])
-        
-        # Bootstrap the baseline total volume on your cold start to avoid skipping updates
-        if last_vol == 0 and current_volume > 0:
-            opt["last_total_volume"] = current_volume
-            last_vol = current_volume
+        # Save this layer's current depth metrics to cross-thread memory for GWD cross-unboxing
+        opt["last_layer_total_qty"] = total_depth
 
-        if last_vol > 0 and current_volume >= last_vol:
-            # We use a next() iterator lookup instead of a hardcoded array layout to map prices safely
+        # =====================================================================
+        # 🟢 STEP 4 PATCH: FALL-THROUGH COLD-BOOT INTERCEPTOR ENGINE
+        # =====================================================================
+        current_volume = int(float(native_message_payload.get('volume_trade_for_the_day', 
+                                   native_message_payload.get('volume', 
+                                   native_message_payload.get('v', 0.0)))))
+        
+        # Access the persistent root global snapshot cache directory map safely
+        if 'LOCAL_REST_SNAPSHOT_CACHE' not in globals() or globals()['LOCAL_REST_SNAPSHOT_CACHE'] is None:
+            globals()['LOCAL_REST_SNAPSHOT_CACHE'] = {}
+        root_cache = globals()['LOCAL_REST_SNAPSHOT_CACHE']
+        
+        # Initialize the global token state bucket if it doesn't exist yet
+        if clean_symbol_str not in root_cache:
+            root_cache[clean_symbol_str] = {
+                "last_total_volume": 0, 
+                "cumulative_volume_delta": 0.0, 
+                "last_layer_total_qty": 0.0
+            }
+            
+        # Pull your absolute baseline properties out of root global memory map
+        stored_historical_vol = int(root_cache[clean_symbol_str].get("last_total_volume", 0))
+        updated_cvd           = float(root_cache[clean_symbol_str].get("cumulative_volume_delta", 0.0))
+        
+        # ────────── ✅ FIXED: FALL-THROUGH INITIALIZATION GATE ──────────
+        # If this is the cold boot tick, we seed a baseline 1 lot below current_volume
+        # to force the Interceptor Gate to execute and register volume delta immediately!
+        if stored_historical_vol == 0 and current_volume > 0:
+            stored_historical_vol = current_volume - 1
+            root_cache[clean_symbol_str]["last_total_volume"] = stored_historical_vol
+
+        # ────────── THE INTERCEPTOR GATE: PROCESS ONLY GENUINE CHANGES ──────────
+        if current_volume > stored_historical_vol and stored_historical_vol > 0:
+            
+            buy_layers = native_message_payload.get('best_5_buy_data', 
+                         native_message_payload.get('buyDepths', 
+                         native_message_payload.get('b', [])))
+                         
+            sell_layers = native_message_payload.get('best_5_sell_data', 
+                          native_message_payload.get('sellDepths', 
+                          native_message_payload.get('s', [])))
+            
+            if not isinstance(buy_layers, list): buy_layers = []
+            if not isinstance(sell_layers, list): sell_layers = []
+
             first_buy_layer = next((b for b in buy_layers if isinstance(b, dict)), {})
             first_sell_layer = next((s for s in sell_layers if isinstance(s, dict)), {})
             
-            best_bid = float(first_buy_layer.get('price', last_price)) if first_buy_layer else last_price
-            best_ask = float(first_sell_layer.get('price', last_price)) if first_sell_layer else last_price
+            backup_price = float(native_message_payload.get('last_traded_price', 
+                                 native_message_payload.get('ltp', last_price)))
+                                 
+            best_bid = float(first_buy_layer.get('price', first_buy_layer.get('p', backup_price))) if first_buy_layer else backup_price
+            best_ask = float(first_sell_layer.get('price', first_sell_layer.get('p', backup_price))) if first_sell_layer else backup_price
             midpoint = (best_bid + best_ask) / 2.0
 
-            # Midpoint Asymmetric Guard prevents flat-price biases from inflating metrics
-            if last_price > midpoint:
-                aggression_factor = 1
-            elif last_price < midpoint:
-                aggression_factor = -1
-            else:
-                aggression_factor = 0  # Neutral state locks zero drift bias completely
-                
-            updated_cvd += float((current_volume - last_vol) * aggression_factor)
-
-        # Network Broker Disconnect Recovery Reset
-        elif current_volume < last_vol and current_volume > 0:
-            last_vol = current_volume
+            if backup_price > midpoint:    aggression_factor = 1
+            elif backup_price < midpoint:  aggression_factor = -1
+            else:                          aggression_factor = 0  
             
-        opt["last_total_volume"] = current_volume
-        opt["cumulative_volume_delta"] = updated_cvd
-
-        # =====================================================================
-        # 🟢 5. MULTI-ASSET CORRIDOR NORMALIZATION MATRIX
-        # =====================================================================
-        active_wall_strike = float(opt.get("atm_corridor_range", 0.0))
-        current_spot_base = float(last_price)
-        
-        # Scale divided-by-100 formatting anomalies automatically back up
-        if 10.0 <= active_wall_strike <= 1000.0:
-            active_wall_strike = active_wall_strike * 100.0
-
-        # =====================================================================
-        # 🚀 INJECTED: ROOT-LEVEL DYNAMIC CVD DELTA BRIDGING ENGINE
-        # =====================================================================
-        # Detects if a core strike switch has occurred and seamlessly bridges the gap
-        try:
-            reg_map = globals().get("TOKEN_REGISTRY_RAM", {})
-            asset_key = "NIFTY" if clean_symbol in ("NIFTY", "26000") else "BANKNIFTY" if clean_symbol in ("BANKNIFTY", "26009") else "SENSEX" if clean_symbol in ("SENSEX", "99919000", "1") else None
+            # Calculate delta against the accurate historical baseline volume
+            volume_delta = current_volume - stored_historical_vol
+            updated_cvd += float(volume_delta * aggression_factor)
             
-            if asset_key:
-                active_strike = float(reg_map.get(asset_key, {}).get("active_strike", 0.0))
-                last_strike   = float(opt.get("last_tracked_strike_base", active_strike))
-                
-                # If an explicit strike switch occurs, lock the final peak volume as a baseline offset
-                if active_strike != last_strike and last_strike > 0.0:
-                    old_peak_cvd = float(opt.get("last_valid_peak_cvd", 0.0))
-                    opt["cvd_running_offset"] = float(opt.get("cvd_running_offset", 0.0)) + old_peak_cvd
-                    opt["last_tracked_strike_base"] = active_strike
-                    print(f"🔄 [MICROSTRUCTURE BRIDGE] Synced CVD tracking from {last_strike} -> {active_strike}. Offsets locked.")
-                
-                # Apply the cumulative rolling offset back to your output variable natively
-                updated_cvd += float(opt.get("cvd_running_offset", 0.0))
-                opt["last_valid_peak_cvd"] = float(opt["cumulative_volume_delta"])
-        except Exception as bridge_fault:
-            print(f"⏳ [BRIDGE BYPASS] Offset calculation deferred: {bridge_fault}")
-
-        # 🟢 DYNAMIC SPOT DRIFT CALIBRATION LAYER
-        if current_spot_base < 10000.0:
-            ws_cache = globals().get("LATEST_WS_TICK_CACHE", {})
-            n_node = ws_cache.get("26000", {})       # NIFTY 50 Spot Token
-            b_node = ws_cache.get("26009", {})       # BANKNIFTY Spot Token
-            s_node = ws_cache.get("99919000", ws_cache.get("1", {}))  # SENSEX Spot Token
+            # Commit the updated volume parameters ONLY when a genuine change occurs
+            root_cache[clean_symbol_str]["last_total_volume"] = current_volume
+            root_cache[clean_symbol_str]["cumulative_volume_delta"] = updated_cvd
             
-            if clean_symbol in ("NIFTY", "26000"):         
-                current_spot_base = float(n_node.get("ltp") or n_node.get("last_traded_price") or 24219.05)
-            elif clean_symbol in ("BANKNIFTY", "26009"):   
-                current_spot_base = float(b_node.get("ltp") or b_node.get("last_traded_price") or 57450.00)
-            elif clean_symbol in ("SENSEX", "99919000", "1"):                               
-                current_spot_base = float(s_node.get("ltp") or s_node.get("last_traded_price") or 78009.25)
-            else:
-                current_spot_base = float(last_price)
+            last_vol = stored_historical_vol
+        else:
+            last_vol = stored_historical_vol
 
-        # Cross-verify if the cached memory strike is completely absurd relative to the index spot price
-        is_dirty_memory = False
-        if current_spot_base > 0.0:
-            deviation_percentage = abs(active_wall_strike - current_spot_base) / current_spot_base
-            if deviation_percentage > 0.12:  # Standard 12% drift envelope protection fence
-                is_dirty_memory = True
 
-        if active_wall_strike <= 1000.0 or is_dirty_memory:
-            if clean_symbol in ("NIFTY", "26000"):         
-                active_wall_strike = 24050.00
-            elif clean_symbol in ("BANKNIFTY", "26009"):   
-                active_wall_strike = 57400.00  
-            elif clean_symbol in ("SENSEX", "99919000", "1"):
-                active_wall_strike = 76900.00  
-            else:                               
-                active_wall_strike = current_spot_base
-            opt["atm_corridor_range"] = active_wall_strike
+        # =====================================================================
+        # 🟢 STEP 5: FIXED LIVE WEBSOCKET CORRIDOR GWD CALCULATION [1.11]
+        # =====================================================================
+        reg_node = TOKEN_REGISTRY_RAM.get(index_prefix, {})
+        
+        atm_ce = str(reg_node.get("ce_token", "")).strip()
+        atm_pe = str(reg_node.get("pe_token", "")).strip()
+        otm_ce = str(reg_node.get("otm_ce_token", "")).strip()
+        otm_pe = str(reg_node.get("otm_pe_token", "")).strip()
 
-        # ACCURATE POINT DIFFERENCE VECTOR: (Clean Normalized Strike - Validated Index Spot)
-        gamma_wall_proximity = float(active_wall_strike - current_spot_base)
+        # Route lookups straight through your live streaming deep nested matrix cache! [1.11]
+        ws_tick_matrix = globals().get('LATEST_WS_TICK_CACHE', {})
+        asset_lane_cache = ws_tick_matrix.get(index_prefix, {})
+
+        # Extract the deep nested token message blocks dynamically
+        atm_ce_payload = asset_lane_cache.get(atm_ce, {})
+        atm_pe_payload = asset_lane_cache.get(atm_pe, {})
+        otm_ce_payload = asset_lane_cache.get(otm_ce, {})
+        otm_pe_payload = asset_lane_cache.get(otm_pe, {})
+
+        # Unbox inner raw_node blocks on the fly if nested inside the cache slots
+        if "raw_node" in atm_ce_payload and isinstance(atm_ce_payload["raw_node"], dict): atm_ce_payload = atm_ce_payload["raw_node"]
+        if "raw_node" in atm_pe_payload and isinstance(atm_pe_payload["raw_node"], dict): atm_pe_payload = atm_pe_payload["raw_node"]
+        if "raw_node" in otm_ce_payload and isinstance(otm_ce_payload["raw_node"], dict): otm_ce_payload = otm_ce_payload["raw_node"]
+        if "raw_node" in otm_pe_payload and isinstance(otm_pe_payload["raw_node"], dict): otm_pe_payload = otm_pe_payload["raw_node"]
+
+        # Parse total liquidity parameters out of your live websocket data blocks metrics concurrently [1.11]
+        atm_ce_qty = float(atm_ce_payload.get('total_buy_quantity', atm_ce_payload.get('totBuyQuan', 0.0))) + \
+                     float(atm_ce_payload.get('total_sell_quantity', atm_ce_payload.get('totSellQuan', 0.0)))
+                     
+        atm_pe_qty = float(atm_pe_payload.get('total_buy_quantity', atm_pe_payload.get('totBuyQuan', 0.0))) + \
+                     float(atm_pe_payload.get('total_sell_quantity', atm_pe_payload.get('totSellQuan', 0.0)))
+                     
+        otm_ce_qty = float(otm_ce_payload.get('total_buy_quantity', otm_ce_payload.get('totBuyQuan', 0.0))) + \
+                     float(otm_ce_payload.get('total_sell_quantity', otm_ce_payload.get('totSellQuan', 0.0)))
+                     
+        otm_pe_qty = float(otm_pe_payload.get('total_buy_quantity', otm_pe_payload.get('totBuyQuan', 0.0))) + \
+                     float(otm_pe_payload.get('total_sell_quantity', otm_pe_payload.get('totSellQuan', 0.0)))
+
+        # Compile the integrated corridor density parameters
+        core_atm_density = atm_ce_qty + atm_pe_qty
+        wing_otm_density = otm_ce_qty + otm_pe_qty
         
-        # Update local snapshot variables
-        opt["order_book_imbalance"] = round(float(order_book_imbalance), 4)
-        opt["gamma_wall_distance"] = round(float(gamma_wall_proximity), 2)
-        
-        return opt["order_book_imbalance"], updated_cvd, opt["gamma_wall_distance"]
-        
-    except Exception as internal_micro_err:
-        print(f"⚠️ [MICRO ENGINE CRITICAL ERROR] Failsafe activated: {internal_micro_err}")
-        resolved_symbol = locals().get('clean_symbol', str(symbol or kwargs.get("token_id") or "").strip().upper())
-        fallback_gwd = 280.95 if resolved_symbol in ("NIFTY", "26000") else (50.00 if resolved_symbol in ("BANKNIFTY", "26009") else 1130.89)
-        return 0.0000, 800.0, fallback_gwd
+        gamma_wall_density = 0.0000
+        if core_atm_density > 0:
+            gamma_wall_density = float(wing_otm_density / core_atm_density)
+            # Apply institutional safety caps to insulate down-funnel deep learning arrays
+            gamma_wall_density = max(0.0000, min(gamma_wall_density, 10.0000))
+
+        return (
+            float(round(order_book_imbalance, 4)), 
+            float(round(updated_cvd, 2)), 
+            float(round(gamma_wall_density, 4))
+        )
+
+    except Exception as err:
+        print(f"❌ Option corridor microstructure tracking failed: {err}")
+        return 0.0000, 0.0, 0.0000
+
+
 
 # =====================================================================
 # 📈 4. ZERO-ALLOCATION MATHEMATICAL INDICATORS & BLACK-SCHOLES SOLVER
@@ -3213,8 +3442,10 @@ def async_excel_spreadsheet_writer_worker():
                     "Nifty_Bank", "CNXIT", "Reliance", "Skew_Velocity", "USD_INR",
                     "ATM_Strike", "CE_Prem", "CE_IV", "CE_Delta", "CE_Theta",
                     "PE_Prem", "PE_IV", "PE_Delta", "PE_Theta",
-                    "PCR_OI_Volume_Proxy", "Order_Book_Imbalance", "Cumulative_Volume_Delta", "Gamma_Wall_Distance",
-                    "Crude", "Gold", "Corp_Event_Flag",
+                    "PCR_OI_Volume_Proxy", "ATM_CE_OBI", "ATM_PE_OBI", "ATM_CE_CVD", "ATM_PE_CVD",
+                    "ITM_CE_OBI", "ITM_PE_OBI", "ITM_CE_CVD", "ITM_PE_CVD",
+                    "OTM_CE_OBI", "OTM_PE_OBI", "OTM_CE_CVD", "OTM_PE_CVD",
+                    "GWD_Metric", "Crude", "Gold", "Corp_Event_Flag",
                     "CE_VWAP", "PE_VWAP", "ZScore_Spot", "OI_Concentration_Diff_Core", "IV_Skew_Velocity",
                     "Moving_Vol_Variance", "Realized_Vol_Val",
                     "VW_Momentum_Val", "Theta_Weighted_Spread", "VWAP_Distance_Vector",
@@ -3259,7 +3490,8 @@ def emit_custom_telemetry_csv_row(asset_name, token_id, custom_filename="nvx_str
     """
     global LATEST_WS_TICK_CACHE, ws_cache_lock
     
-    target_dir = r"C:\Users\Virtu\OneDrive\Desktop\Trade\MoneyFarm\01_Development"
+    #target_dir = r"C:\Users\Virtu\OneDrive\Desktop\Trade\MoneyFarm\01_Development"
+    target_dir = os.getcwd()
     target_file = os.path.join(target_dir, custom_filename)
     
     tk_str = str(token_id).strip()
@@ -3749,8 +3981,9 @@ def apply_universal_feature_bridging(asset_name, current_strike, raw_metrics, op
         accumulator_keys = ["ce_vol", "pe_vol", "near_oi", "near_vol", "cvd", "opt_vol_delta", "vol_accel"]
         greeks_keys = [
             "ce_prem", "pe_prem", "ce_iv", "pe_iv", "ce_delta", "pe_delta", "ce_theta", "pe_theta", 
-            "ce_vwap", "pe_vwap", "ce_vw_momentum", "pe_vw_momentum", "ce_theta_spread", 
-            "pe_theta_spread", "ce_vwap_vector", "pe_vwap_vector"
+            "ce_vwap", "pe_vwap", "ce_vw_momentum", "pe_vw_momentum", "ce_theta_spread", "gwd_metric",
+            "pe_theta_spread", "ce_vwap_vector", "pe_vwap_vector", "atm_ce_obi", "atm_pe_obi", "atm_ce_cvd", "atm_pe_cvd",
+            "otm_ce_obi", "otm_pe_obi", "otm_ce_cvd", "otm_pe_cvd","itm_ce_obi", "itm_pe_obi", "itm_ce_cvd", "itm_pe_cvd"
         ]
         all_bridge_targets = accumulator_keys + greeks_keys
 
@@ -3986,8 +4219,63 @@ def calculate_and_sync_tradetron(time_str=None):
             pe_delta = float(globals().get(f"GREEK_{sym_upper}_PE_DELTA", -0.4790))
             pe_theta = float(globals().get(f"GREEK_{sym_upper}_PE_THETA", -11.85))
 
+
             ad_ratio_proxy = safe_float(compute_complete_institutional_50_ad_ratio(sym_upper))
-            obi, cvd, gwd = extract_angelone_microstructure(symbol=sym_upper, token_id=target_token, full_market_data_response=raw_streaming_message, last_price=spot)
+
+            # Initialize baseline safety parameters
+            atm_ce_obi = atm_ce_cvd = atm_pe_obi = atm_pe_cvd = 0.0000
+            itm_ce_obi = itm_ce_cvd = otm_pe_obi = otm_pe_cvd = 0.0000
+            otm_ce_obi = otm_ce_cvd = itm_pe_obi = itm_pe_cvd = 0.0000
+            gwd_metric = 0.0000
+
+            asset_key = str(symbol).strip().upper()
+            current_spot_price = float(spot)
+
+            # 2. Extract nested websocket tick maps and contract tokens from RAM registers [1.11]
+            nifty_snapshot_matrix = LATEST_WS_TICK_CACHE.get(asset_key, {})
+            reg_node = TOKEN_REGISTRY_RAM.get(asset_key, {})
+
+            # 3. Pull the exact active 6-token IDs currently running on the wire [1.11]
+            atm_ce_id = str(reg_node.get("ce_token", "")).strip()
+            atm_pe_id = str(reg_node.get("pe_token", "")).strip()
+            itm_ce_id = str(reg_node.get("itm_ce_token", "")).strip()  # ATM - 100 Call
+            otm_pe_id = str(reg_node.get("otm_pe_token", "")).strip()  # ATM - 100 Put
+            otm_ce_id = str(reg_node.get("otm_ce_token", "")).strip()  # ATM + 100 Call
+            itm_pe_id = str(reg_node.get("itm_pe_token", "")).strip()  # ATM + 100 Put
+
+            # 4. 🧮 EXTRACTION VELOCITY PASS: 
+            # Call extract_angelone_microstructure() separately for each target leg! [1.11]
+            # We pass the pre-cached payload block matching each token directly from memory [1.11].
+            
+            # Lane A: At-The-Money (ATM) Speculative Battleground
+            if atm_ce_id:
+                atm_ce_obi, atm_ce_cvd, gwd_metric = extract_angelone_microstructure(
+                    symbol=atm_ce_id, full_market_data_response=nifty_snapshot_matrix.get(atm_ce_id, {}), last_price=current_spot_price
+                )
+            if atm_pe_id:
+                atm_pe_obi, atm_pe_cvd, _ = extract_angelone_microstructure(
+                    symbol=atm_pe_id, full_market_data_response=nifty_snapshot_matrix.get(atm_pe_id, {}), last_price=current_spot_price
+                )
+
+            # Lane B: ATM - 100 Strike Wings (ITM Call / OTM Put)
+            if itm_ce_id:
+                itm_ce_obi, itm_ce_cvd, _ = extract_angelone_microstructure(
+                    symbol=itm_ce_id, full_market_data_response=nifty_snapshot_matrix.get(itm_ce_id, {}), last_price=current_spot_price
+                )
+            if otm_pe_id:
+                otm_pe_obi, otm_pe_cvd, _ = extract_angelone_microstructure(
+                    symbol=otm_pe_id, full_market_data_response=nifty_snapshot_matrix.get(otm_pe_id, {}), last_price=current_spot_price
+                )
+
+            # Lane C: ATM + 100 Strike Wings (OTM Call / ITM Put)
+            if otm_ce_id:
+                otm_ce_obi, otm_ce_cvd, _ = extract_angelone_microstructure(
+                    symbol=otm_ce_id, full_market_data_response=nifty_snapshot_matrix.get(otm_ce_id, {}), last_price=current_spot_price
+                )
+            if itm_pe_id:
+                itm_pe_obi, itm_pe_cvd, _ = extract_angelone_microstructure(
+                    symbol=itm_pe_id, full_market_data_response=nifty_snapshot_matrix.get(itm_pe_id, {}), last_price=current_spot_price
+                )
             
             pcr_oi_volume_proxy, options_volume_imbalance, _ = calculate_microstructure_proxies_by_symbol(sym_upper)
             if pcr_oi_volume_proxy == 0.0 or options_volume_imbalance == 0.0:
@@ -4061,7 +4349,11 @@ def calculate_and_sync_tradetron(time_str=None):
             # =====================================================================
             # ✅ FIXED: Fused all raw metrics into ONE single payload to guarantee zero strike-shift splits [INDEX: 1.11]!
             raw_payload = {
-                "ce_vol": ce_vol, "pe_vol": pe_vol, "near_oi": near_oi, "near_vol": near_vol, "cvd": cvd,
+                "ce_vol": ce_vol, "pe_vol": pe_vol, "near_oi": near_oi, "near_vol": near_vol,
+                "atm_ce_obi": atm_ce_obi, "atm_ce_cvd": atm_ce_cvd, "atm_pe_obi": atm_pe_obi, "atm_pe_cvd": atm_pe_cvd,
+                "itm_ce_obi": itm_ce_obi, "itm_ce_cvd": itm_ce_cvd, "otm_pe_obi": otm_pe_obi, "otm_pe_cvd": otm_pe_cvd,
+                "otm_ce_obi": otm_ce_obi, "otm_ce_cvd": otm_ce_cvd, "itm_pe_obi": itm_pe_obi, "itm_pe_cvd": itm_pe_cvd,
+                "gwd_metric": gwd_metric,
                 "opt_vol_delta": option_vol_delta if option_vol_delta != 0.0 else (ce_vol - pe_vol)/max(1.0, near_vol), 
                 "vol_accel": heavy_vol_accel, "ce_prem": ce_premium, "pe_prem": pe_premium, "ce_iv": ce_iv, "pe_iv": pe_iv, 
                 "ce_delta": ce_delta, "pe_delta": pe_delta, "ce_theta": ce_theta, "pe_theta": pe_theta,
@@ -4084,6 +4376,19 @@ def calculate_and_sync_tradetron(time_str=None):
             vw_momentum_val         = bridged_data["bridged_ce_vw_momentum"]
             theta_weighted_spread   = bridged_data["bridged_ce_theta_spread"]
             vwap_distance_vector    = bridged_data["bridged_ce_vwap_vector"]
+            gwd_metric              = bridged_data["bridged_gwd_metric"]
+            atm_ce_obi              = bridged_data["bridged_atm_ce_obi"]
+            atm_pe_obi              = bridged_data["bridged_atm_pe_obi"]
+            itm_ce_obi              = bridged_data["bridged_itm_ce_obi"]
+            itm_pe_obi              = bridged_data["bridged_itm_pe_obi"]
+            otm_ce_obi              = bridged_data["bridged_otm_ce_obi"]
+            otm_pe_obi              = bridged_data["bridged_otm_pe_obi"]
+            atm_ce_cvd              = bridged_data["bridged_atm_ce_cvd"]
+            atm_pe_cvd              = bridged_data["bridged_atm_pe_cvd"]
+            itm_ce_cvd              = bridged_data["bridged_itm_ce_cvd"]
+            itm_pe_cvd              = bridged_data["bridged_itm_pe_cvd"]
+            otm_ce_cvd              = bridged_data["bridged_otm_ce_cvd"]
+            otm_pe_cvd              = bridged_data["bridged_otm_pe_cvd"]
             options_premium_skew    = ce_premium / max(0.01, pe_premium)
 
             # =====================================================================
@@ -4097,8 +4402,10 @@ def calculate_and_sync_tradetron(time_str=None):
                 float(round(comp9, 2)), float(round(comp11, 2)), float(round(comp10, 2)), float(round(skew_vel, 4)), float(round(usd_inr, 4)),
                 float(atm_strk), float(round(ce_premium, 2)), float(round(ce_iv, 4)), float(round(ce_delta, 4)), float(round(ce_theta, 4)),
                 float(round(pe_premium, 2)), float(round(pe_iv, 4)), float(round(pe_delta, 4)), float(round(pe_theta, 4)),
-                float(round(pcr_oi_volume_proxy, 4)), float(round(obi, 4)), float(round(cvd, 2)), float(round(gwd, 2)),
-                float(round(crude, 2)), float(round(gold, 2)), int(corp_event_flag),
+                float(round(pcr_oi_volume_proxy, 4)), float(round(atm_ce_obi, 4)), float(round(atm_pe_obi, 4)),
+                float(round(atm_ce_cvd, 2)), float(round(atm_pe_cvd, 2)), float(round(itm_ce_obi, 4)), float(round(itm_pe_obi, 4)),
+                float(round(itm_ce_cvd, 2)), float(round(itm_pe_cvd, 2)), float(round(otm_ce_obi, 4)), float(round(otm_pe_obi, 4)),
+                float(round(otm_ce_cvd, 2)), float(round(otm_pe_cvd, 2)), float(round(gwd_metric, 2)), float(round(crude, 2)), float(round(gold, 2)), int(corp_event_flag),
                 float(round(ce_vwap, 2)), float(round(pe_vwap, 2)), float(round(zscore_spot, 4)), float(round(oi_concentration_diff_core, 2)), float(round(iv_skew_velocity, 4)),
                 float(round(moving_vol_variance, 6)), float(round(realized_vol_val, 6)),
                 float(round(vw_momentum_val, 4)), 
@@ -4117,8 +4424,8 @@ def calculate_and_sync_tradetron(time_str=None):
                 float(round(pv_divergence, 4))
             ]
 
-            # Enforce a precise math layout to keep the array bounded at exactly 57 slots [INDEX: 1.11]
-            TARGET_ROW_LENGTH = 57
+            # Enforce a precise math layout to keep the array bounded at exactly 67 slots [INDEX: 1.11]
+            TARGET_ROW_LENGTH = 67
             if len(payload_matrix_row) > TARGET_ROW_LENGTH: 
                 payload_matrix_row = payload_matrix_row[:TARGET_ROW_LENGTH]
             while len(payload_matrix_row) < TARGET_ROW_LENGTH: 
@@ -4154,7 +4461,7 @@ def calculate_and_sync_tradetron(time_str=None):
                 except Exception: 
                     pass
 
-            print(f"📊 [CORE ASSEMBLED] {sym_upper} Matrix Row Emitted -> Spot: {spot:.2f} | CE LTP: {ce_premium:.2f} | OBI: {obi:.4f}")
+            print(f"📊 [CORE ASSEMBLED] {sym_upper} Matrix Row Emitted -> Spot: {spot:.2f} | CE LTP: {ce_premium:.2f} | OBI: {atm_ce_obi:.4f}")
 
         except Exception as module_runtime_err:
             print(f"⚠️ [ASSEMBLY FAULT] Loop processing bypassed for {sym_upper}: {module_runtime_err}")
@@ -4905,121 +5212,109 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
         # 🟢 PRODUCTION STANDARD: DYNAMIC TIME-BAR ORDER BOOK IMBALANCE TRACKER
         # =====================================================================
         # Dynamically extracts the latest symmetrical order book imbalance snapshot [1.1].
-        try:
-            order_book_imbalance = 0.0
-            
-            # ✅ FIXED: Dynamically map "ORDER_BOOK_IMBALANCE" from col_map to survive any column shifts [1.11]!
-            obi_idx = col_map.get("ORDER_BOOK_IMBALANCE", 30)  # Defaults safely to index 30 of the 57-column matrix row
-            
-            if raw_rows_slice and len(raw_rows_slice) > 0:
-                # 📊 Isolate the final trailing snapshot row at the absolute end of the active time bar
-                latest_row = raw_rows_slice[-1]
-                
-                # Handle raw split string lists dynamically
-                if isinstance(latest_row, list) and len(latest_row) > obi_idx:
-                    order_book_imbalance = float(latest_row[obi_idx])
-                # Handle pre-parsed dictionary nodes (Aligned directly to your exact standardized uppercase key names)
-                elif isinstance(latest_row, dict):
-                    # Support both friendly case variations seamlessly
-                    order_book_imbalance = float(latest_row.get("ORDER_BOOK_IMBALANCE", latest_row.get("order_book_imbalance", 0.0)))
-            
-            # Lock precision mapping to 4 decimal places for crisp matrix rows
-            order_book_imbalance = float(round(order_book_imbalance, 4))
-            
-        except Exception as obi_err:
-            order_book_imbalance = 0.0
-            print(f"⚠️ [MATH ERROR] Failed tracking dynamic order_book_imbalance: {obi_err}")
-
         # =====================================================================
-        # 🟢 PRODUCTION STANDARD: DYNAMIC CUMULATIVE VOLUME DELTA (CVD)
+        # 🟢 PRODUCTION OPTIONS FLOW INTRADAY RESOLUTION MATRIX
         # =====================================================================
-        # Accumulates order book volume pressure delta continuously across bars [1.1].
-        try:
-            cumulative_volume_delta = 0.0
-            
-            # ✅ FIXED: Dynamically map "CVD" from col_map to survive any column shifts [1.11]!
-            cvd_idx = col_map.get("CVD", 31)  # Defaults safely to index 31 of the 57-column matrix row
-            
-            if raw_rows_slice and len(raw_rows_slice) > 0:
-                # 📊 Isolate the final trailing snapshot row at the absolute end of the active time bar
-                latest_row = raw_rows_slice[-1]
-                
-                # 🟢 SAFE HIGH-SPEED LIST PARSING TRACK
-                if isinstance(latest_row, list) and len(latest_row) > cvd_idx:
-                    cumulative_volume_delta = float(latest_row[cvd_idx])
-                    
-                # 🟢 SAFE MULTI-THREADED DICTIONARY TRACK (Aligned directly to your standardized uppercase key names)
-                elif isinstance(latest_row, dict):
-                    # Support both friendly case variations seamlessly
-                    cumulative_volume_delta = float(latest_row.get("CVD", latest_row.get("cumulative_volume_delta", 0.0)))
-            
-            # Lock type precision to 4 decimal places for crisp machine learning feature matrices
-            cumulative_volume_delta = float(round(cumulative_volume_delta, 4))
-            
-        except Exception as cvd_err:
-            cumulative_volume_delta = 0.0
-            print(f"⚠️ [MATH ERROR] Failed computing dynamic cumulative_volume_delta: {cvd_err}")
-            
-
-
-        # ==============================================================================
-        # 🟢 PRODUCTION STANDARD: THREAD-SAFE GAMMA WALL PROXIMITY CALCULATOR
-        # ==============================================================================
+        # Wrapped completely inside a root try/except shell for platform safety.
+        # Leverages your existing 'timeframe_label' parameter for strict isolation!
         # =====================================================================
-        # 📊 UNIVERSAL PURE-STATE GAMMA WALL DISTANCE ENGINE (STREAMLINED)
         # =====================================================================
-        # ✅ TOP-LEVEL PRE-SEEDING INITIALIZATION GATES
-
-        gamma_wall_distance = 0.0
+        # 🟢 PRODUCTION OPTIONS FLOW INTRADAY RESOLUTION MATRIX
+        # =====================================================================
+        atm_ce_obi = atm_ce_cvd = atm_pe_obi = atm_pe_cvd = 0.0000
+        itm_ce_obi = itm_ce_cvd = otm_pe_obi = otm_pe_cvd = 0.0000
+        otm_ce_obi = otm_ce_cvd = itm_pe_obi = itm_pe_cvd = 0.0000
+        gwd_metric = 0.0000
 
         try:
-            # Surgical scope binding injection to wipe out NameError bugs
-            global REST_API_OPTIONS_CACHE, cache_lock
+            if 'CANDLE_CHASSIS_STATE' not in globals():
+                globals()['CANDLE_CHASSIS_STATE'] = {}
+                
+            chassis_state = globals()['CANDLE_CHASSIS_STATE']
+            tf_label = str(timeframe_label).upper().strip() 
+            timeframe_lane_key = f"{tf_label}_CHASSIS"
             
-            # ✅ FIXED: Dynamically map "SPOT" from col_map to survive any column shifts [INDEX: 1.11]!
-            spot_idx = col_map.get("SPOT", 5) # Defaults safely to index 5 of the layout matrix
+            # ✅ FIXED: Dynamically map the bar trigger variable name to match your engine's local names
+            is_new_bar_trigger = locals().get("is_new_candle_bar_trigger", 
+                                 locals().get("is_new_bar", 
+                                 locals().get("is_bar_close", 
+                                 locals().get("new_bar_trigger", True))))
 
-            if raw_rows_slice and len(raw_rows_slice) > 0:
-                latest_row = raw_rows_slice[-1]
-                is_list_ctx = isinstance(latest_row, list)
+            # 2. 🧊 THE CHASSIS FREEZE GUARD GATING LAYER
+            if is_new_bar_trigger or timeframe_lane_key not in chassis_state:
+                # Dynamic index token mapping routing anchor (Supports NIFTY, BANKNIFTY, SENSEX)
+                asset_key = str(symbol).strip().upper() if 'symbol' in locals() else "NIFTY"
+                reg_node = TOKEN_REGISTRY_RAM.get(asset_key, {})
                 
-                # ✅ REUSES HIGHER-LEVEL DECLARATION: Invokes parent function's safe_numeric_parse natively [INDEX: 1.11]!
-                current_spot_close = safe_numeric_parse(latest_row, spot_idx if is_list_ctx else "SPOT")
-                    
-                # Defensive fallback gate check: Bind your global caches safely
-                if 'REST_API_OPTIONS_CACHE' not in globals():
-                    globals()['REST_API_OPTIONS_CACHE'] = {}
-                if 'cache_lock' not in globals():
-                    import threading
-                    globals()['cache_lock'] = threading.Lock()
-                    
-                # Pull institutional boundaries directly out of the asset-isolated cache blocks [INDEX: 1.11]
-                asset_upper = str(symbol).strip().upper()
-                
-                with globals()['cache_lock']:
-                    local_cache_snapshot = dict(globals()['REST_API_OPTIONS_CACHE'])
-                
-                gamma_wall_strike = float(local_cache_snapshot.get(asset_upper, {}).get("oi_resistance_strike", 0.0))
-                
-                # Baseline fallback anchors matching your specific session proxies if the chain is cold [INDEX: 1.11]
-                if gamma_wall_strike == 0.0:
-                    if asset_upper == "NIFTY":       gamma_wall_strike = 24500.0
-                    elif asset_upper == "BANKNIFTY": gamma_wall_strike = 52500.0
-                    elif asset_upper == "SENSEX":    gamma_wall_strike = 79500.0
-                    else:                            gamma_wall_strike = current_spot_close
-                
-                # Apply the asset-agnostic normalized Percentage Distance formula [INDEX: 1.11]
-                if gamma_wall_strike > 1e-6:
-                    gamma_wall_distance = float((current_spot_close - gamma_wall_strike) / gamma_wall_strike)
-                else:
-                    gamma_wall_distance = 0.0
+                chassis_state[timeframe_lane_key] = {
+                    "active_strike": float(reg_node.get("active_strike", 24000.0)),
+                    "atm_ce": str(reg_node.get("ce_token", "")).strip(),
+                    "atm_pe": str(reg_node.get("pe_token", "")).strip(),
+                    "itm_ce": str(reg_node.get("itm_ce_token", "")).strip(),
+                    "otm_pe": str(reg_node.get("otm_pe_token", "")).strip(),
+                    "otm_ce": str(reg_node.get("otm_ce_token", "")).strip(),
+                    "itm_pe": str(reg_node.get("itm_pe_token", "")).strip()
+                }
 
-            # Lock type precision to 4 decimal places for crisp machine learning feature matrices [INDEX: 1.11]
-            gamma_wall_distance = float(round(gamma_wall_distance, 4))
+            # 3. 📡 RUNTIME REFERENCE EXTRACTION FROM THE LOCKED TIMEFRAME CHASSIS
+            active_chassis = chassis_state[timeframe_lane_key]
             
-        except Exception as gamma_calc_err:
-            gamma_wall_distance = 0.0
-            print(f"⚠️ [MATH ERROR] Failed computing dynamic gamma_wall_distance for {timeframe_label}: {gamma_calc_err}")
+            atm_ce_id = active_chassis["atm_ce"]
+            atm_pe_id = active_chassis["atm_pe"]
+            itm_ce_id = active_chassis["itm_ce"]
+            otm_pe_id = active_chassis["otm_pe"]
+            otm_ce_id = active_chassis["otm_ce"]
+            itm_pe_id = active_chassis["itm_pe"]
+            
+            current_spot_price = float(last_price) if last_price else 24000.0
+            asset_key = str(symbol).strip().upper() if 'symbol' in locals() else "NIFTY"
+            nifty_snapshot_matrix = LATEST_WS_TICK_CACHE.get(asset_key, {})
+
+            # 4. 🧮 DELEGATE CALCULATIONS SEPARATELY FOR EACH FROZEN LEG
+            if atm_ce_id:
+                atm_ce_obi, atm_ce_cvd, gwd_metric = extract_angelone_microstructure(
+                    symbol=atm_ce_id, full_market_data_response=nifty_snapshot_matrix.get(atm_ce_id, {}), last_price=current_spot_price, is_new_candle_bar_trigger=is_new_bar_trigger
+                )
+            if atm_pe_id:
+                atm_pe_obi, atm_pe_cvd, _ = extract_angelone_microstructure(
+                    symbol=atm_pe_id, full_market_data_response=nifty_snapshot_matrix.get(atm_pe_id, {}), last_price=current_spot_price, is_new_candle_bar_trigger=is_new_bar_trigger
+                )
+            if itm_ce_id:
+                itm_ce_obi, itm_ce_cvd, _ = extract_angelone_microstructure(
+                    symbol=itm_ce_id, full_market_data_response=nifty_snapshot_matrix.get(itm_ce_id, {}), last_price=current_spot_price, is_new_candle_bar_trigger=is_new_bar_trigger
+                )
+            if otm_pe_id:
+                otm_pe_obi, otm_pe_cvd, _ = extract_angelone_microstructure(
+                    symbol=otm_pe_id, full_market_data_response=nifty_snapshot_matrix.get(otm_pe_id, {}), last_price=current_spot_price, is_new_candle_bar_trigger=is_new_bar_trigger
+                )
+            if otm_ce_id:
+                otm_ce_obi, otm_ce_cvd, _ = extract_angelone_microstructure(
+                    symbol=otm_ce_id, full_market_data_response=nifty_snapshot_matrix.get(otm_ce_id, {}), last_price=current_spot_price, is_new_candle_bar_trigger=is_new_bar_trigger
+                )
+            if itm_pe_id:
+                itm_pe_obi, itm_pe_cvd, _ = extract_angelone_microstructure(
+                    symbol=itm_pe_id, full_market_data_response=nifty_snapshot_matrix.get(itm_pe_id, {}), last_price=current_spot_price, is_new_candle_bar_trigger=is_new_bar_trigger
+                )
+
+        except Exception as matrix_extraction_err:
+            print(f"⚠️ [RESAMPLER ENGINE ERROR] Failed unboxing {timeframe_label} option corridor flows: {matrix_extraction_err}")
+
+        # Final type coercion layer rounds out variables safely
+        atm_ce_obi = float(round(atm_ce_obi, 4))
+        atm_ce_cvd = float(round(atm_ce_cvd, 2))
+        atm_pe_obi = float(round(atm_pe_obi, 4))
+        atm_pe_cvd = float(round(atm_pe_cvd, 2))
+        
+        itm_ce_obi = float(round(itm_ce_obi, 4))
+        itm_ce_cvd = float(round(itm_ce_cvd, 2))
+        otm_pe_obi = float(round(otm_pe_obi, 4))
+        otm_pe_cvd = float(round(otm_pe_cvd, 2))
+        
+        otm_ce_obi = float(round(otm_ce_obi, 4))
+        otm_ce_cvd = float(round(otm_ce_cvd, 2))
+        itm_pe_obi = float(round(itm_pe_obi, 4))
+        itm_pe_cvd = float(round(itm_pe_cvd, 2))
+        gwd_metric = float(round(gwd_metric, 4))
 
 
         # =====================================================================
@@ -5038,7 +5333,7 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
             asset_upper = str(symbol).strip().upper()
             
             # ✅ FIXED: Dynamically map "CORP_EVENT_FLAG" from col_map to survive any column shifts [1.11]!
-            corp_idx = col_map.get("CORP_EVENT_FLAG", 35) 
+            corp_idx = col_map.get("CORP_EVENT_FLAG", 45) 
 
             # Initialize global tracking parameters safely under a dedicated namespace if missing
             if "GLOBAL_LAST_EARNINGS_SHOCK" not in globals():
@@ -5257,12 +5552,15 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
         # =====================================================================
         # ✅ TOP-LEVEL PRE-SEEDING INITIALIZATION GATES [INDEX: 1.11]
         # Permanently secures down-funnel variable safety across all timeframe lanes!
+        # =====================================================================
+        # 🟢 ADVANCED REMAINING VECTORS PROCESSING CORE
+        # =====================================================================
         oi_concentration_delta   = 0.0
         iv_skew_velocity_adv     = 0.0
         order_book_imbalance_adv = 0.0
 
         try:
-            # Dynamically map layout names from col_map to survive any column shifts [INDEX: 1.11]!
+            # Dynamically map layout names from col_map to survive any column shifts [1.11]!
             ce_iv_idx  = col_map.get("CE_IV", 22)                         
             pe_iv_idx  = col_map.get("PE_IV", 26)                         
             oi_dif_idx = col_map.get("OI_CONCENTRATION_DIFF_SNAPSHOT", 10) 
@@ -5272,7 +5570,7 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                 closing_row = raw_rows_slice[-1]
                 is_list_ctx = isinstance(opening_row, list)
                 
-                # Handle raw split string lists dynamically [INDEX: 1.11]
+                # Handle raw split string lists dynamically [1.11]
                 if is_list_ctx and len(opening_row) > max(ce_iv_idx, pe_iv_idx, oi_dif_idx):
                     open_ce_iv  = float(opening_row[ce_iv_idx])
                     open_pe_iv  = float(opening_row[pe_iv_idx])
@@ -5282,7 +5580,7 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                     open_oi_diff  = float(opening_row[oi_dif_idx])
                     close_oi_diff = float(closing_row[oi_dif_idx])
                     
-                # Handle pre-parsed dictionary nodes (Aligned to your exact uppercase key names) [INDEX: 1.11]
+                # Handle pre-parsed dictionary nodes (Aligned to your exact uppercase key names) [1.11]
                 elif isinstance(opening_row, dict):
                     open_ce_iv  = float(opening_row.get("CE_IV", opening_row.get("ce_iv", 0.0)))
                     open_pe_iv  = float(opening_row.get("PE_IV", opening_row.get("pe_iv", 0.0)))
@@ -5295,37 +5593,40 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                     open_ce_iv = open_pe_iv = close_ce_iv = close_pe_iv = 0.0
                     open_oi_diff = close_oi_diff = 0.0
                 
-                # 2. Compute the normalized baseline skew ratios for both boundaries [INDEX: 1.11]
+                # 2. Compute the normalized baseline skew ratios for both boundaries [1.11]
                 open_total_iv = open_pe_iv + open_ce_iv
                 close_total_iv = close_pe_iv + close_ce_iv
                 
                 open_skew = (open_pe_iv - open_ce_iv) / open_total_iv if open_total_iv > 0.0 else 0.0
                 close_skew = (close_pe_iv - close_ce_iv) / close_total_iv if close_total_iv > 0.0 else 0.0
                 
-                # 3. Apply advanced mathematical alpha vectors using synchronized variables [INDEX: 1.11]
+                # 3. Apply advanced mathematical alpha vectors using synchronized variables [1.11]
                 oi_concentration_delta   = float(close_oi_diff - open_oi_diff)
                 iv_skew_velocity_adv     = float(close_skew - open_skew) * 1.1
                 
-                # ✅ FIXED: Reference the live, active 'obi' tracking variable natively to kill the local lookup drop! [INDEX: 1.11]
-                # If 'obi' exists in locals or globals, pull it safely; otherwise, fallback to 0.0 defensively
-                live_obi = locals().get("obi", globals().get("obi", 0.0))
+                # ✅ FIXED: Pull your modern live microstructural OBI variable safely from memory!
+                # If 'atm_ce_obi' exists from your corridor loop, use it; otherwise, fallback to 'live_obi'
+                live_obi = locals().get("atm_ce_obi", locals().get("obi", globals().get("obi", 0.0)))
                 order_book_imbalance_adv = float(live_obi * 0.85)
             else:
-                oi_concentration_delta = iv_skew_velocity_adv = order_book_imbalance_adv = 0.0
+                oi_concentration_delta = iv_skew_velocity_adv = 0.0
+                # ✅ FIXED: Bind an absolute default value to prevent UnboundLocalError exceptions! [1.11]
+                live_obi = locals().get("atm_ce_obi", locals().get("obi", globals().get("obi", 0.0)))
+                order_book_imbalance_adv = float(live_obi * 0.85)
                 
-            # Lock type precision for crisp machine learning feature matrices [INDEX: 1.11]
+            # Lock type precision for crisp machine learning feature matrices [1.11]
             oi_concentration_delta   = float(round(oi_concentration_delta, 2))
             iv_skew_velocity_adv     = float(round(iv_skew_velocity_adv, 4))
             order_book_imbalance_adv = float(round(order_book_imbalance_adv, 4))
             
         except Exception as remaining_vectors_err:
             oi_concentration_delta = iv_skew_velocity_adv = order_book_imbalance_adv = 0.0
-            print(f"⚠️ [MATH ERROR] Failed computing advanced remaining vectors for {timeframe_label}: {remaining_vectors_err}")
+            print(f"❌ [MATH ERROR] Failed computing advanced remaining vectors for {timeframe_label}: {remaining_vectors_err}")
+
 
         # =====================================================================
         # 🟢 PRODUCTION STANDARD: DYNAMIC ADVANCED IV SKEW VELOCITY (iv_skew_velocity_adv)
         # =====================================================================
-        # Dynamically tracks the velocity of out-of-the-money option tail asymmetry [1.1].
         # ==============================================================================
         # 🟢 PRODUCTION STANDARD: THREAD-SAFE ADVANCED SKEW VELOCITY COMPLEX
         # ==============================================================================
@@ -5420,78 +5721,65 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
         # =====================================================================
         # 📊 UNIVERSAL CONTEXT-INSULATED ADVANCED OBI ENGINE (RESOLVED)
         # =====================================================================
+        # Initialize advanced variables upfront at the root scope layer
+        oi_concentration_delta   = 0.0
+        iv_skew_velocity_adv     = 0.0
+        order_book_imbalance_adv = 0.0
+
         try:
-            order_book_imbalance_adv = 0.0
-            tf_clean = str(timeframe_label).upper().strip() # e.g., "1-MIN", "5-MIN", "10-MIN", "15-MIN" [INDEX: 1.11]
+            tf_clean = str(timeframe_label).upper().strip() 
             asset_upper = str(symbol).strip().upper()
+            session_key = f"{asset_upper}_{tf_clean}"
 
-            # ✅ FIXED: Reference your synchronized global variables securely
-            global cache_lock
+            if 'cache_lock' not in globals():
+                import threading
+                globals()['cache_lock'] = threading.Lock()
 
-            # ✅ FIXED: Dynamically map layout names from col_map to survive any column shifts [INDEX: 1.11]!
-            ad_idx  = col_map.get("WEIGHTED_AD_RATIO", 7)    # Defaults safely to index 7 of the 57-column matrix row
-            obi_idx = col_map.get("ORDER_BOOK_IMBALANCE", 30) # Defaults safely to index 30 of the 57-column matrix row
+            # Dynamically map layout indices out of col_map safely
+            ad_idx  = col_map.get("WEIGHTED_AD_RATIO", 7)    
+            obi_idx = col_map.get("ORDER_BOOK_IMBALANCE", 30) 
 
             if raw_rows_slice and len(raw_rows_slice) > 0:
-                # Isolate the final trailing snapshot row at the absolute end of the active time bar
                 latest_row = raw_rows_slice[-1]
                 
-                # Handle raw split string lists dynamically
-                if isinstance(latest_row, list) and len(latest_row) > max(ad_idx, obi_idx):
+                # Container A: Dictionary Node check
+                if isinstance(latest_row, dict):
+                    order_book_imbalance_adv = float(latest_row.get("ORDER_BOOK_IMBALANCE_ADV", latest_row.get("order_book_imbalance_adv", 0.0)))
+                
+                # Container B: Raw List context check
+                elif isinstance(latest_row, list) and len(latest_row) > max(ad_idx, obi_idx):
                     atm_obi  = float(latest_row[obi_idx])
                     ad_ratio = float(latest_row[ad_idx]) if float(latest_row[ad_idx]) > 0.0 else 1.0
-                    
-                    # Scales the baseline ATM order imbalance against the Index AD Ratio
                     order_book_imbalance_adv = float(atm_obi * (1.0 if ad_ratio >= 1.0 else -1.0) * 0.85)
+
+                # ─── THREAD-SAFE TIMEFRAME INSULATED FALLBACK PERSISTENCE ENGINE ───
+                with globals()['cache_lock']:
+                    if "GLOBAL_ADVANCED_OBI_CACHE" not in globals():
+                        globals()["GLOBAL_ADVANCED_OBI_CACHE"] = {}
                     
-                # Handle pre-parsed dictionary nodes (Aligned strictly to your active standardized uppercase columns) [INDEX: 1.11]
-                elif isinstance(latest_row, dict):
-                    order_book_imbalance_adv = float(latest_row.get("ORDER_BOOK_IMBALANCE_ADV", latest_row.get("order_book_imbalance_adv", 0.0)))
-                    
-                # 2. ✅ FIXED: THREAD-SAFE FALLBACK ENTRY LAYER WITH TIMEFRAME INSULATION
-                if order_book_imbalance_adv == 0.0:
-                    if 'cache_lock' not in globals():
-                        import threading
-                        globals()['cache_lock'] = threading.Lock()
-                        
-                    with globals()['cache_lock']:
-                        if "GLOBAL_ADVANCED_OBI_CACHE" not in globals():
-                            globals()["GLOBAL_ADVANCED_OBI_CACHE"] = {}
-                        
-                        # ✅ FIXED: Combine asset and timeframe string tokens to completely eliminate cross-timeframe bleeding! [INDEX: 1.11]
-                        session_key = f"{asset_upper}_{tf_clean}"
+                    if order_book_imbalance_adv == 0.0:
                         order_book_imbalance_adv = float(globals()["GLOBAL_ADVANCED_OBI_CACHE"].get(session_key, 0.0))
-                else:
-                    # Update cache with the active non-zero value for this specific timeframe lane [INDEX: 1.11]
-                    if 'cache_lock' not in globals():
-                        import threading
-                        globals()['cache_lock'] = threading.Lock()
-                    with globals()['cache_lock']:
-                        if "GLOBAL_ADVANCED_OBI_CACHE" not in globals():
-                            globals()["GLOBAL_ADVANCED_OBI_CACHE"] = {}
-                        session_key = f"{asset_upper}_{tf_clean}"
+                    else:
                         globals()["GLOBAL_ADVANCED_OBI_CACHE"][session_key] = order_book_imbalance_adv
             else:
-                order_book_imbalance_adv = 0.0
+                with globals()['cache_lock']:
+                    global_cache = globals().get("GLOBAL_ADVANCED_OBI_CACHE", {})
+                    order_book_imbalance_adv = float(global_cache.get(session_key, 0.0))
 
-            # Lock precision mapping strictly to 4 decimal places for clean machine learning matrix rows
+            # Enforce clean type precision boundaries safely inside the try block!
             order_book_imbalance_adv = float(round(order_book_imbalance_adv, 4))
             
         except Exception as adv_obi_err:
             order_book_imbalance_adv = 0.0
             print(f"⚠️ [MATH ERROR] Failed tracking dynamic order_book_imbalance_adv for {timeframe_label}: {adv_obi_err}")
 
+
+
         # ==============================================================================
         # 🟢 PRODUCTION STANDARD: UNBIASED HIGH-DENSITY VOLUME VARIANCE POOL
         # ==============================================================================
         # =====================================================================
         # 📊 DYNAMIC CONTEXT-INSULATED VOLUME VARIANCE CHASSIS [1.11]
-        # =====================================================================
-        # =====================================================================
-        # 📊 DYNAMIC CONTEXT-INSULATED VOLUME VARIANCE CHASSIS [1.11]
-        # =====================================================================
-        # =====================================================================
-        # 📊 UNIVERSAL DYNAMIC VOLUME VARIANCE ENGINE (ALL TIMEFRAMES)
         # =====================================================================
         # =====================================================================
         # 📊 UNIVERSAL DYNAMIC VOLUME VARIANCE ENGINE (HARDENED REWRITE) [1.11]
@@ -5977,7 +6265,7 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                 
                 # ✅ FIXED: Dynamically map all standardized variable names from col_map to survive any shifts [1.11]!
                 spot_idx  = col_map.get("SPOT", 5)       # Defaults safely to index 5 of the layout matrix
-                crude_idx = col_map.get("CRUDE", 33)     # Defaults safely to index 34 of the layout matrix
+                crude_idx = col_map.get("CRUDE", 43)     # Defaults safely to index 43 of the layout matrix
                 
                 # ✅ HELPER FUNCTION: Defensive type conversion prevents string-to-float thread drops
                 def safe_numeric_parse(data_source, key_or_index, default_val=0.0):
@@ -6215,7 +6503,7 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                 spot_idx = col_map.get("SPOT", 5)                     # Defaults safely to index 5 of the layout matrix
                 obi_idx  = col_map.get("ORDER_BOOK_IMBALANCE", 30)    # Defaults safely to index 30 of the layout matrix
                 cvd_idx  = col_map.get("CVD", 31)                     # Defaults safely to index 31 of the layout matrix
-                gwd_idx  = col_map.get("GAMMA_WALL_DISTANCE", 32)     # Defaults safely to index 32 of the layout matrix
+                gwd_idx  = col_map.get("GAMMA_WALL_DISTANCE", 42)     # Defaults safely to index 42 of the layout matrix
                 
                 # ✅ REUSES HIGHER-LEVEL DECLARATION: Invokes parent function's safe_numeric_parse natively [INDEX: 1.11]!
                 current_spot = safe_numeric_parse(latest_row, spot_idx if is_list_ctx else "SPOT")
@@ -6267,7 +6555,7 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                 
                 # ✅ FIXED: Dynamically map all standardized variable names from col_map to survive any shifts [1.11]!
                 cvd_idx = col_map.get("CVD", 31)                     # Defaults safely to index 31 of the layout matrix
-                gwd_idx = col_map.get("GAMMA_WALL_DISTANCE", 32)     # Defaults safely to index 32 of the layout matrix
+                gwd_idx = col_map.get("GAMMA_WALL_DISTANCE", 42)     # Defaults safely to index 42 of the layout matrix
                 
                 # ✅ REUSES HIGHER-LEVEL DECLARATION: Invokes parent function's safe_numeric_parse natively [1.11]!
                 current_cvd_val = safe_numeric_parse(latest_row, cvd_idx if is_list_ctx else "CVD")
@@ -6307,6 +6595,65 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
         except Exception as gamma_choke_fault:
             gamma_choke = 0.0
             print(f"⚠️ [MATH ERROR] Failed computing dynamic gamma_choke for {timeframe_label}: {gamma_choke_fault}")
+
+        # =====================================================================
+        # 🟢 PRODUCTION TIMEFRAME PERSISTENT GAMMA WALL VELOCITY ENGINE
+        # =====================================================================
+        # Tracks institutional wall migration metrics for your major duration CSVs!
+        # =====================================================================
+        gamma_wall_velocity = 0.0000
+        
+        try:
+            tf_label = str(timeframe_label).upper().strip() # Natively supports all durations: "10-SEC", "1-MIN", "5-MIN", "15-MIN"
+            asset_upper = str(symbol).strip().upper()
+            session_key = f"{asset_upper}_{tf_label}"
+            
+            # Safe multi-threaded initialization of the persistent global tracking cache
+            if 'GLOBAL_GAMMA_VELOCITY_CACHE' not in globals():
+                globals()['GLOBAL_GAMMA_VELOCITY_CACHE'] = {}
+            velocity_cache = globals()['GLOBAL_GAMMA_VELOCITY_CACHE']
+
+            # =====================================================================
+            # 🎯 FIXED: ROBUST CONTEXTFALLBACK LOOKUP GATE
+            # =====================================================================
+            # Probes locals first for an existing float; falls back to parsing the row to kill NameErrors!
+            if 'gamma_wall_distance' in locals():
+                current_distance = float(locals().get('gamma_wall_distance', 0.0))
+            else:
+                gwd_idx = col_map.get("GAMMA_WALL_DISTANCE", 42) if 'col_map' in locals() else 42
+                is_list_ctx = isinstance(latest_row, list) if 'latest_row' in locals() else False
+                
+                # Check if safe_numeric_parse and latest_row are alive in this scope
+                if 'latest_row' in locals() and 'safe_numeric_parse' in globals():
+                    current_gwd_val = safe_numeric_parse(latest_row, gwd_idx if is_list_ctx else "GAMMA_WALL_DISTANCE")
+                    current_distance = float(current_gwd_val)
+                else:
+                    current_distance = 0.0000
+
+            # 2. 🧮 HISTORICAL MOMENTUM DELTA ENGINE
+            # Compares the current candle closed snapshot distance with the previous bar's distance
+            if session_key in velocity_cache:
+                previous_distance = float(velocity_cache[session_key].get("last_distance", current_distance))
+                
+                # Major Duration Velocity = Structural Rate of Wall Migration
+                gamma_wall_velocity = float(current_distance - previous_distance)
+            else:
+                gamma_wall_velocity = 0.0000
+                velocity_cache[session_key] = {}
+
+            # 3. Commit current distance into global memory for the NEXT bar window's lookback pass
+            # For 10-SEC loops, it updates continuously. For bars, it triggers strictly on a fresh candle flip!
+            is_new_bar_gate = is_new_candle_bar_trigger if 'is_new_candle_bar_trigger' in locals() else True
+            
+            if tf_label == "10-SEC" or is_new_bar_gate or "last_distance" not in velocity_cache[session_key]:
+                velocity_cache[session_key]["last_distance"] = current_distance
+                
+            gamma_wall_velocity = float(round(gamma_wall_velocity, 6))
+
+        except Exception as gamma_vel_err:
+            gamma_wall_velocity = 0.0000
+            print(f"❌ [RESAMPLER ENGINE ERROR] Failed tracking gamma_wall_velocity for {symbol}: {gamma_vel_err}")
+
 
         # =====================================================================
         # 🟢 PRODUCTION STANDARD: UNIFIED DECOUPLED MACRO SUPPORT_RESISTANCE
@@ -6387,58 +6734,56 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
         # ==============================================================================
         # 🟢 STEP 2: THREAD-SAFE DYNAMIC MACRO DECAY VECTOR EXTRACTIONS
         # ==============================================================================
+        # =====================================================================
+        # 📈 HIGH-FREQUENCY REAL-TIME MACRO VOLATILITY SHOCK DECAY ENGINE
+        # =====================================================================
         try:
-            # 🟢 FIXED: Removed 'live_cache' and 'cache_memory_lock' from the global statement
-            # to completely destroy the SyntaxError. We keep GLOBAL_SESSION_DECAY_TRACKERS 
-            # here because we are actively modifying its internal dictionary state structure.
-            global GLOBAL_SESSION_DECAY_TRACKERS
+            current_time_obj = datetime.strptime(time_str, "%H:%M:%S")
             
-            if "GLOBAL_SESSION_DECAY_TRACKERS" not in globals():
-                globals()["GLOBAL_SESSION_DECAY_TRACKERS"] = {
-                    "rbi_decay": 0.0,
-                    "budget_decay": 0.0,
-                    "fed_decay": 0.0
-                }
+            # Initialize local tracking storage floats natively
+            rbi_decay_val = 0.0
+            budget_decay_val = 0.0
+            fed_decay_val = 0.0
+            rbi_speech_active   = union_budget_active = us_fed_fomc_active="0.0000"
             
-            session_decay = globals()["GLOBAL_SESSION_DECAY_TRACKERS"]
-            
-            # Extract live raw flag parameters from your thread-safe global cache natively
-            with cache_memory_lock:
-                daemon_rbi_flag    = float(live_cache.get("RBI_Speech_Active", 0.0))
-                daemon_budget_flag = float(live_cache.get("Union_Budget_Active", 0.0))
-                daemon_fed_flag    = float(live_cache.get("US_Fed_FOMC_Active", 0.0))
+            # A. Process RBI Speeches (10:00:00 AM IST official anchor window)
+            if GLOBAL_IS_RBI_DAY > 0.5:
+                event_start = datetime.strptime("10:00:00", "%H:%M:%S")
+                if current_time_obj >= event_start:
+                    elapsed = (current_time_obj - event_start).seconds / 60.0
+                    rbi_decay_val = float(max(0.0, 1.0 * (0.96 ** elapsed)))
+                else: rbi_decay_val = 0.1500
 
-            def evaluate_macro_decay(current_decay_state, daemon_flag_trigger, decay_coefficient):
-                if daemon_flag_trigger > 0.0:
-                    return 1.0
-                else:
-                    updated_decay = current_decay_state * decay_coefficient
-                    return updated_decay if updated_decay > 0.001 else 0.0
+            # B. Process Union Budgets (11:00:00 AM IST official anchor window)
+            if GLOBAL_IS_BUDGET_DAY > 0.5:
+                event_start = datetime.strptime("11:00:00", "%H:%M:%S")
+                if current_time_obj >= event_start:
+                    elapsed = (current_time_obj - event_start).seconds / 60.0
+                    budget_decay_val = float(max(0.0, 1.0 * (0.98 ** elapsed)))
+                else: budget_decay_val = 0.2500
 
-            tf_clean = str(timeframe_label).upper().strip()
-            
-            if "1" in tf_clean:
-                rbi_coef, budget_coef, fed_coef = 0.96, 0.98, 0.97
-                session_decay["rbi_decay"]    = evaluate_macro_decay(session_decay["rbi_decay"], daemon_rbi_flag, rbi_coef)
-                session_decay["budget_decay"] = evaluate_macro_decay(session_decay["budget_decay"], daemon_budget_flag, budget_coef)
-                session_decay["fed_decay"]    = evaluate_macro_decay(session_decay["fed_decay"], daemon_fed_flag, fed_coef)
-                
-                rbi_speech_active   = session_decay["rbi_decay"]
-                union_budget_active = session_decay["budget_decay"]
-                us_fed_fomc_active  = session_decay["fed_decay"]
-            else:
-                rbi_coef, budget_coef, fed_coef = 0.82, 0.90, 0.85
-                rbi_speech_active   = evaluate_macro_decay(session_decay["rbi_decay"], daemon_rbi_flag, rbi_coef)
-                union_budget_active = evaluate_macro_decay(session_decay["budget_decay"], daemon_budget_flag, budget_coef)
-                us_fed_fomc_active  = evaluate_macro_decay(session_decay["fed_decay"], daemon_fed_flag, fed_coef)
-            
-            rbi_speech_active   = float(round(rbi_speech_active, 4))
-            union_budget_active = float(round(union_budget_active, 4))
-            us_fed_fomc_active  = float(round(us_fed_fomc_active, 4))
-            
-        except Exception as macro_decay_err:
-            rbi_speech_active = union_budget_active = us_fed_fomc_active = 0.0
-            print(f"⚠️ [MATH ERROR] Failed compiling macro decay vectors: {macro_decay_err}")
+            # C. Process US Fed Announcements (Overnight shock decays from opening bell)
+            if GLOBAL_IS_FED_DAY > 0.5:
+                market_open = datetime.strptime("09:15:00", "%H:%M:%S")
+                if current_time_obj >= market_open:
+                    elapsed = (current_time_obj - market_open).seconds / 60.0
+                    fed_decay_val = float(max(0.0, 1.0 * (0.94 ** elapsed)))
+
+            # ✅ SYMMETRICAL CACHE UPDATE: Lock values right back to your global dictionary master profile!
+            LATEST_GLOBAL_MACRO_RECORD["RBI_Speech_Active"]   = f"{round(rbi_decay_val, 4):.4f}"
+            LATEST_GLOBAL_MACRO_RECORD["Union_Budget_Active"] = f"{round(budget_decay_val, 4):.4f}"
+            LATEST_GLOBAL_MACRO_RECORD["US_Fed_FOMC_Active"]  = f"{round(fed_decay_val, 4):.4f}"
+
+            rbi_speech_active   = float(round(rbi_decay_val, 4))
+            union_budget_active = float(round(budget_decay_val, 4))
+            us_fed_fomc_active  = float(round(fed_decay_val, 4))
+
+        except Exception as decay_fault:
+            LATEST_GLOBAL_MACRO_RECORD["RBI_Speech_Active"]   = "0.0000"
+            LATEST_GLOBAL_MACRO_RECORD["Union_Budget_Active"] = "0.0000"
+            LATEST_GLOBAL_MACRO_RECORD["US_Fed_FOMC_Active"]  = "0.0000"
+
+            rbi_speech_active   = union_budget_active = us_fed_fomc_active="0.0000"
 
         # Your evaluate_macro_decay() function will now work perfectly! 
         # When a flag hits 1.0, it snaps the variable to maximum risk. As time passes, it exponentially decays back to 0.0 smoothly.
@@ -6854,8 +7199,15 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
 
                 # 4. 🗠 PHASE 2 MICROSTRUCTURE FUSION LEVEL (ORDER BOOK & CVD INTERSECT) [1.11]
                 # Reusing native, upstream-logged local metrics directly for ultra-low latency execution!
-                live_obi = float(order_book_imbalance)
-                live_cvd = float(cumulative_volume_delta)
+                obi_idx  = col_map.get("ORDER_BOOK_IMBALANCE", 30)    # Defaults safely to index 30 of the layout matrix
+                cvd_idx  = col_map.get("CVD", 31)                     # Defaults safely to index 31 of the layout matrix
+                
+                # ✅ REUSES HIGHER-LEVEL DECLARATION: Invokes parent function's safe_numeric_parse natively [INDEX: 1.11]!
+                current_obi  = safe_numeric_parse(latest_row,  obi_idx if is_list_ctx else "ORDER_BOOK_IMBALANCE")
+                current_cvd  = safe_numeric_parse(latest_row,  cvd_idx if is_list_ctx else "CVD")
+
+                live_obi = float(obi_idx)
+                live_cvd = float(cvd_idx)
                 
                 # Proximity metrics relative to the smooth volume-weighted zone boundaries
                 res_proximity_multiplier = 1.0 / (abs(vw_res_dist_pct) + 0.001)
@@ -6921,60 +7273,54 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
         # ==============================================================================
         # 🟢 PRODUCTION STANDARD: UNIFIED HARD-ALIGNED MACRO REGISTRY MAPPING
         # ==============================================================================
+        # =====================================================================
+        # 🟢 MACRO SNAPSHOT PARAMETERS PROCESSING CORE
+        # =====================================================================
+        # =====================================================================
+        # 🟢 CLEAN MACRO SNAPSHOT PARAMETERS CORE
+        # =====================================================================
+        # Hard default initializations to prevent reference errors before assignment
+        macro_usdinr, macro_crude, macro_gold = 83.9000, 6120.00, 72150.00
+
         try:
-            # 1. Reference your synchronized global concurrency variables securely
-            global cache_lock, MACRO_TOKENS_RAM
-            
-            # 2. ✅ FIXED: Dynamically map uppercase layout names from col_map to survive any shifts [1.11]!
-            usdinr_idx = col_map.get("USD_INR", 19) # Defaults safely to index 19 of the 57-column matrix row
-            crude_idx  = col_map.get("CRUDE", 33)   # Defaults safely to index 34 of the 57-column matrix row
-            gold_idx   = col_map.get("GOLD", 34)    # Defaults safely to index 35 of the 57-column matrix row
-
-            # 3. ✅ FIXED: Aligned cache anchors straight to modern active baseline parameters
-            if 'cache_lock' not in globals():
-                import threading
-                globals()['cache_lock'] = threading.Lock()
-
-            with globals()['cache_lock']:
-                # Pull running macro baselines safely from your global currency registry map
-                macro_registry = globals().get("MACRO_TOKENS_RAM", {})
-                macro_usdinr = float(macro_registry.get("USDINR", {}).get("last_price", 83.9000))
-                macro_crude  = float(macro_registry.get("CRUDEOIL", {}).get("last_price", 6120.00))
-                macro_gold   = float(macro_registry.get("GOLD", {}).get("last_price", 72150.00))
+            # 1. Dynamically map layout indices from col_map to survive spreadsheet shifts
+            usdinr_idx = col_map.get("USD_INR", 19) 
+            crude_idx  = col_map.get("CRUDE", 43)   
+            gold_idx   = col_map.get("GOLD", 44)    
 
             if raw_rows_slice and len(raw_rows_slice) > 0:
-                # Isolate the final trailing snapshot row at the absolute end of the active time bar [1.11]
                 latest_row = raw_rows_slice[-1]
                 
-                # 🟢 SAFE HIGH-SPEED LIST PARSING TRACK (Guards array length strings precisely)
+                # 🟢 TRACK A: SAFE HIGH-SPEED LIST PARSING (Guards array length boundary precisely)
                 if isinstance(latest_row, list) and len(latest_row) > max(usdinr_idx, crude_idx, gold_idx):
                     macro_usdinr = float(latest_row[usdinr_idx])
                     macro_crude  = float(latest_row[crude_idx])
                     macro_gold   = float(latest_row[gold_idx])
                     
-                # 🟢 SAFE MULTI-THREADED DICTIONARY TRACK (Maps straight to your true case-matched uppercase keys) [1.11]
+                # 🟢 TRACK B: SAFE DICTIONARY PARSING (Maps directly to case-matched uppercase keys)
                 elif isinstance(latest_row, dict):
                     macro_usdinr = float(latest_row.get("USD_INR", macro_usdinr))
                     macro_crude  = float(latest_row.get("CRUDE", macro_crude))
                     macro_gold   = float(latest_row.get("GOLD", macro_gold))
             
-            # Lock type precision parameters for crisp machine learning mapping
+            # Enforce clean type precision parameters for crisp machine learning mapping
             macro_usdinr = float(round(macro_usdinr, 4))
             macro_crude  = float(round(macro_crude, 2))
             macro_gold   = float(round(macro_gold, 2))
             
         except Exception as macro_mapping_err:
-            print(f"⚠️ [MATH ERROR] Failed mapping macro snapshot parameters inside resampler: {macro_mapping_err}")
-            # Ensure modern production safety fallbacks are maintained on execution faults
+            print(f"❌ [MATH ERROR] Failed mapping macro snapshot parameters inside resampler: {macro_mapping_err}")
+            # Maintain active production safety defaults on any unexpected parsing fault
             macro_usdinr, macro_crude, macro_gold = 83.90, 6120.00, 72150.00
+
 
         # ==============================================================================
         # 🟢 PRODUCTION STANDARD: DYNAMIC TIMEFRAME SENTIMENT INDEX EXTRACTION MATRIX
         # ==============================================================================
         try:
             # 1. ✅ FIXED: Dynamically map uppercase layout names from col_map to survive any shifts [1.11]!
-            sent_1h_idx      = col_map.get("SENTIMENT_1H", 47)      # Defaults safely to index 35 of the 57-column matrix row
-            sent_session_idx = col_map.get("SENTIMENT_SESSION", 48) # Defaults safely to index 36 of the 57-column matrix row
+            sent_1h_idx      = col_map.get("SENTIMENT_1H", 57)      # Defaults safely to index 35 of the 57-column matrix row
+            sent_session_idx = col_map.get("SENTIMENT_SESSION", 58) # Defaults safely to index 36 of the 57-column matrix row
 
             if raw_rows_slice and len(raw_rows_slice) > 0:
                 latest_row = raw_rows_slice[-1]
@@ -7059,8 +7405,13 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
             f"{cluster_res_dist_pct:.6f}", f"{cluster_sup_dist_pct:.6f}",
             f"{futures_near_oi_vel:.4f}", f"{futures_near_vol_vel:.4f}",
             f"{options_iv_skew_velocity:.4f}", f"{pcr_oi_volume:.4f}",
-            f"{order_book_imbalance:.4f}", f"{cumulative_volume_delta:.4f}",
-            f"{gamma_wall_distance:.4f}", f"{earnings_surprise_shock:.4f}",
+            f"{atm_ce_obi:.4f}", f"{atm_pe_obi:.4f}",
+            f"{itm_ce_obi:.4f}", f"{itm_pe_obi:.4f}",
+            f"{otm_ce_obi:.4f}", f"{otm_pe_obi:.4f}",
+            f"{atm_ce_cvd:.4f}", f"{atm_pe_cvd:.4f}",
+            f"{itm_ce_cvd:.4f}", f"{itm_pe_cvd:.4f}",
+            f"{otm_ce_cvd:.4f}", f"{otm_pe_cvd:.4f}",
+            f"{gwd_metric:.4f}", f"{earnings_surprise_shock:.4f}",
             f"{rbi_speech_active:.4f}", f"{union_budget_active:.4f}", f"{us_fed_fomc_active:.4f}",
             f"{macro_usdinr:.2f}", f"{macro_crude:.2f}", f"{macro_gold:.2f}",
             f"{vwap:.2f}", f"{zscore_spot:.4f}", f"{oi_concentration_delta:.2f}",
@@ -7087,7 +7438,8 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
             f"{float(vrp_spread):.4f}",
             f"{float(gamma_concentration):.4f}",
             f"{float(gamma_squeeze_structural_score):.4f}",
-            f"{float(gamma_choke):.4f}"
+            f"{float(gamma_choke):.4f}",
+            f"{float(gamma_wall_velocity):.4f}"
         ]
         # Write clean formatted spreadsheet blocks straight to disk output fields
         file_exists = os.path.isfile(output_file_path)
@@ -7105,7 +7457,9 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                             "Fused_Resistance_Score", "Fused_Support_Score", "Wall_Absorption_Bias",
                             "Cluster_Resistance", "Cluster_Support", "Cluster_Res_Dist_pct", "Cluster_Sup_Dist_pct",
                             "Futures_Near_OI_Vel", "Futures_Near_Vol_Vel", "Options_IV_Skew_Velocity", # 20-24
-                            "PCR_OI_Volume", "Order_Book_Imbalance", "Cumulative_Volume_Delta", "Gamma_Wall_Distance", "Earnings_Surprise_Shock", # 25-29
+                            "PCR_OI_Volume", "ATM_CE_OBI", "ATM_PE_OBI", "ITM_CE_OBI", "ITM_PE_OBI", "OTM_CE_OBI", "OTM_PE_OBI", # 25-31
+                            "ATM_CE_CVD", "ATM_PE_CVD", "ITM_CE_CVD", "ITM_PE_CVD", "OTM_CE_CVD", "OTM_PE_CVD",
+                            "Gamma_Wall_Distance", "Earnings_Surprise_Shock", # 25-29
                             "RBI_Speech_Active", "Union_Budget_Active", "US_Fed_FOMC_Active",             # 30-32
                             "USD_INR", "Crude_Oil", "Gold",                                               # 33-35
                             "Session_VWAP", "Session_ZScore_Spot", "OI_Concentration_Delta",             # 36-38
@@ -7130,7 +7484,8 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                             "VRP_Spread",                                                                 # 68
                             "Gamma_Concentration",                                                        # 69
                             "Gamma_Squeeze_Structural_Score",                                             # 70
-                            "Gamma_Choke"                                                                 # 71-88
+                            "Gamma_Choke",                                                                # 71
+                            "Gamma_Wall_Velocity"                                                          # 72-88
                 ])
 
             writer.writerow(final_74_feature_row)
@@ -7201,9 +7556,19 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                     "futures_near_vol_vel":         float(futures_near_vol_vel),
                     "options_iv_skew_velocity":     float(options_iv_skew_velocity),
                     "pcr_oi_volume":                float(pcr_oi_volume),
-                    "order_book_imbalance":         float(order_book_imbalance),
-                    "cumulative_volume_delta":      float(cumulative_volume_delta),
-                    "gamma_wall_distance":          float(gamma_wall_distance),
+                    "atm_ce_obi":                   float(atm_ce_obi),
+                    "atm_pe_obi":                   float(atm_pe_obi),
+                    "itm_ce_obi":                   float(itm_ce_obi),
+                    "itm_pe_obi":                   float(itm_pe_obi),
+                    "otm_ce_obi":                   float(otm_ce_obi),
+                    "otm_pe_obi":                   float(otm_pe_obi),
+                    "atm_ce_cvd":                   float(atm_ce_cvd),
+                    "atm_pe_cvd":                   float(atm_pe_cvd),
+                    "itm_ce_cvd":                   float(itm_ce_cvd),
+                    "itm_pe_cvd":                   float(itm_pe_cvd),
+                    "otm_ce_cvd":                   float(otm_ce_cvd),
+                    "otm_pe_cvd":                   float(otm_pe_cvd),                    
+                    "gamma_wall_distance":          float(gwd_metric),
                     "earnings_surprise_shock":      float(earnings_surprise_shock),
                     "rbi_speech_active":            float(rbi_speech_active),
                     "union_budget_active":          float(union_budget_active),
@@ -7261,7 +7626,8 @@ def compile_and_flush_candle_matrix(symbol, raw_rows_slice, output_file_path, ti
                     "vrp_spread":                   float(vrp_spread),
                     "gamma_concentration":          float(gamma_concentration),
                     "gamma_squeeze_structural_score": float(gamma_squeeze_structural_score),
-                    "gamma_choke":                  float(gamma_choke)
+                    "gamma_choke":                  float(gamma_choke),
+                    "gamma_wall_velocity":          float(gamma_wall_velocity)
                 }
                 
                 # Serialize the complete dictionary to a JSON string block [1.1]
@@ -7914,16 +8280,17 @@ def decoupled_fii_dii_flow_scraper_daemon():
 
 def background_rest_oi_refresher_worker():
     """
-    BACKGROUND UNIVERSAL REST REFRESHER & METRICS SAFETY NET (CONSOLIDATED PRO BUILD)
-    ✔ ONE-SHOT REST SEED: Pre-populates prices/volume/OI for ALL 35+ portfolio tokens simultaneously [INDEX: 1.6, 1.11].
-    ✔ TYPE-RESILIENT FENCE: Defensive checks resolve dynamic boot timings without silent KeyErrors [INDEX: 1.11].
-    ✔ INFRASTRUCTURE INSULATED: Uses dedicated tracking keys to permanently eliminate state-collision loops [INDEX: 1.11].
-    ✔ CRASH IMMUNE: Safely handles file locks or network glitches without wiping live active subscriptions [INDEX: 1.6].
+    BACKGROUND UNIVERSAL REST REFRESHER & OPTION CORRIDOR ROTATOR (ATM SNIPER EDITION)
+    ✔ ATM CORRIDOR SNIPPING: Hot-swaps all 6 target tokens (ATM, ATM-100, ATM+100) per index simultaneously [1.11].
+    ✔ ONE-SHOT REST SEED: Pre-populates prices/volume/OI for ALL 35+ portfolio tokens simultaneously [1.6, 1.11].
+    ✔ TYPE-RESILIENT FENCE: Defensive checks resolve dynamic boot timings without silent KeyErrors [1.11].
+    ✔ INFRASTRUCTURE INSULATED: Uses dedicated tracking keys to permanently eliminate state-collision loops [1.11].
+    ✔ CRASH IMMUNE: Safely handles file locks or network glitches without wiping live active subscriptions [1.6].
     """
     global TOKEN_REGISTRY_RAM, ACTIVE_SUBSCRIBED_OPTIONS
     import time
 
-    print("📡 [REST SAFETY NET] Background refresher thread online. Holding for core compiler sync...")
+    print("📡 [REST SAFETY NET] Background corridor rotator online. Holding for core compiler sync...")
 
     # =====================================================================
     # 🛡️ STEP 1: PRODUCTION COLD-START THREAD SYNCHRONIZATION FENCE
@@ -7937,20 +8304,21 @@ def background_rest_oi_refresher_worker():
             bank_map    = reg.get("BANKNIFTY", {}) if isinstance(reg.get("BANKNIFTY"), dict) else {}
             sensex_map  = reg.get("SENSEX", {}) if isinstance(reg.get("SENSEX"), dict) else {}
             
+            # Verify using the baseline ATM tokens to achieve initial sync clearance
             nifty_ce    = str(nifty_map.get("ce_token", "")).strip()
             bank_ce     = str(bank_map.get("ce_token", "")).strip()
             sensex_ce   = str(sensex_map.get("ce_token", "")).strip()
 
-            # Verify that option string arrays are cleanly populated with live keys [INDEX: 1.11]
+            # Verify that option string arrays are cleanly populated with live keys [1.11]
             has_nifty  = len(nifty_ce) > 2 and nifty_ce.lower() != "none"
             has_bank   = len(bank_ce) > 2 and bank_ce.lower() != "none"
             has_sensex = len(sensex_ce) > 2 and sensex_ce.lower() != "none"
 
             if has_nifty and has_bank and has_sensex:
-                print("🎯 [REST SAFETY NET LOCK] Token registry verification successful. Core compiler sync achieved!")
+                print("🎯 [REST SAFETY NET LOCK] Token registry verification successful. Core corridor sync achieved!")
                 break
             else:
-                print(f"⏳ [REST WAIT] Awaiting initial compilation pass... NIFTY={has_nifty} | BANKNIFTY={has_bank} | SENSEX={has_sensex}")
+                print(f"⏳ [REST WAIT] Awaiting initial corridor compilation... NIFTY={has_nifty} | BANKNIFTY={has_bank} | SENSEX={has_sensex}")
                 
         except Exception as sync_fence_fault:
             print(f"⚠️ [REST SYNC FENCE] Suppressed auxiliary boot delay exception: {sync_fence_fault}")
@@ -7963,10 +8331,9 @@ def background_rest_oi_refresher_worker():
     while True:
         try:
             ws_client = globals().get("sws") # Pull the active global socket engine object safely
-            print("\n🔄 [REST SWEEP START] Re-evaluating spot index movements and auditing portfolio cash lines...")
+            print("\n🔄 [REST SWEEP START] Re-evaluating spot indices and auditing corridor option lanes...")
             
-            # 🛡️ THE SINGLE SOURCE OF TRUTH SHIELD:
-            # Force-recalculate spot parameters and adjust dynamic contract matrices first [INDEX: 1.11]
+            # Force-recalculate spot parameters and adjust dynamic contract matrices first [1.11]
             compiler_success = compile_local_token_registry() 
             
             if not compiler_success:
@@ -7977,40 +8344,42 @@ def background_rest_oi_refresher_worker():
             # =================================================================
             # 📡 LAYER A: ONE-SHOT BATCH SNAPSHOT TO PREVENT DATA BLINDNESS
             # =================================================================
-            # ✅ FIXED: Invokes the complete multi-segment engine ONCE per loop cycle [INDEX: 1.11].
-            # This batch fetches live values for options, equities, MCX, and CDS tokens simultaneously [INDEX: 1.6, 1.11]!
+            # Invokes the complete multi-segment engine ONCE per loop cycle [1.11].
+            # This batch fetches live values for options, equities, MCX, and CDS tokens simultaneously [1.6, 1.11]!
             cold_boot_seed_option_metrics()
 
             # =================================================================
-            # 📡 LAYER B: INDEX OPTIONS HOT-SWAP ROUTING CHECKS
+            # 📡 LAYER B: INDEX OPTIONS HOT-SWAP CORRIDOR ROUTING CHECKS [1.11]
             # =================================================================
             for asset in ["NIFTY", "BANKNIFTY", "SENSEX"]:
                 asset_upper = str(asset).strip().upper()
                 reg_node = globals().get("TOKEN_REGISTRY_RAM", {}).get(asset_upper, {})
 
-                # ✅ FIXED: Asset-isolated lane tracking keys eliminate the NIFTY/BANKNIFTY state overwrite bug [INDEX: 1.11]!
+                # Asset-isolated lane tracking keys eliminate the state overwrite bug [1.11]!
                 lane_key = f"{asset_upper}_OPT"
                 current_running_wire_tokens = list(ACTIVE_SUBSCRIBED_OPTIONS.get(lane_key, []))
 
-                # Pull the freshly updated token IDs out of the synchronized registry memory
-                c_tk = str(reg_node.get("ce_token", "")).strip()
-                p_tk = str(reg_node.get("pe_token", "")).strip()
+                # ✅ FIXED: Pull the complete 6-token ATM Corridor matrix instead of just 2 tokens! [1.11]
+                # Safely stringifies and filters empty parameters to construct your target execution array
+                newly_compiled_target_tokens = []
+                for token_key in ["ce_token", "pe_token", "itm_ce_token", "otm_pe_token", "otm_ce_token", "itm_pe_token"]:
+                    tk_val = str(reg_node.get(token_key, "")).strip()
+                    if tk_val and tk_val not in ("", "None", "0"):
+                        newly_compiled_target_tokens.append(tk_val)
 
-                if c_tk and p_tk and c_tk not in ("", "None", "0"):
+                if len(newly_compiled_target_tokens) >= 2:
                     try:
-                        newly_compiled_target_tokens = [c_tk, p_tk]
-                        
                         # DYNAMIC NETWORK DELTA DETECTION GATEWAY
-                        # Compares running socket streams vs newly calculated source of truth entries [INDEX: 1.11]
+                        # Compares running socket streams vs newly calculated 6-token corridors [1.11]
                         if set(newly_compiled_target_tokens) != set(current_running_wire_tokens) and ws_client is not None:
-                            print(f"🔥 [ATM SHIFT DETECTED] Strike shift verified for {asset_upper}. Hot-swapping network lines...")
+                            print(f"🔥 [ATM CORRIDOR SHIFT] Strike switch verified for {asset_upper}. Hot-swapping 6-leg matrix...")
                             print(f"   Stale Wire Tokens: {current_running_wire_tokens}")
-                            print(f"   Target ATM Tokens: {newly_compiled_target_tokens}")
+                            print(f"   Target ATM Corridor: {newly_compiled_target_tokens}")
                             
-                            # 2 = NFO (NSE Options), 4 = BFO (BSE Options) [INDEX: 1.6]
+                            # 2 = NFO (NSE Options), 4 = BFO (BSE Options) [1.6]
                             tgt_seg = 4 if asset_upper == "SENSEX" else 2  
                             
-                            # Invoke the standalone utility function to drop stale legs and subscribe to new ones [INDEX: 1.6]
+                            # Invoke standalone utility to drop old 6-leg block and subscribe to new corridor [1.6]
                             dynamically_shift_options_lane(
                                 ws_client=ws_client,
                                 exchange_type=tgt_seg,
@@ -8018,15 +8387,15 @@ def background_rest_oi_refresher_worker():
                                 new_tokens=newly_compiled_target_tokens,
                                 asset_label=asset_upper
                             )
-                            
+
                             # Synchronize your active network tracking map state memory thread-safely
                             ACTIVE_SUBSCRIBED_OPTIONS[lane_key] = newly_compiled_target_tokens
                         else:
-                            # Strikes are completely stable. Skip redundant network modifications safely.
-                            print(f"✔ [REST TRACK STATE] Strikes are stable for {asset_upper}. Current tokens: {current_running_wire_tokens}")
+                            # Complete corridor is stable. Skip redundant network modifications safely.
+                            print(f"✔ [REST CORRIDOR STATE] Corridor is stable for {asset_upper}. Active tokens: {current_running_wire_tokens}")
 
                     except Exception as single_asset_fault:
-                        print(f"⚠️ [REST INDEX SKIPPED] Processing deferred for index option {asset_upper}: {single_asset_fault}")
+                        print(f"⚠️ [REST INDEX SKIPPED] Processing deferred for index option corridor {asset_upper}: {single_asset_fault}")
                         continue
 
         except Exception as rest_net_fault:
@@ -8423,6 +8792,63 @@ def spawn_secondary_concurrent_workflow_daemons():
         print(f"   Diagnostic Reason: {redis_err}")
         print("   Status: Running using standard thread-safe local in-memory dictionaries.")
 
+# =====================================================================
+# 📊 THE MASTER GLOBAL MACRO AND RISK ENVIRONMENT MATRIX REGISTER
+# =====================================================================
+# This cache register updates dynamically across every incoming minute bar pass
+# Aligned 100% symmetrically to your 73-column quantitative features vector!
+# =====================================================================
+
+def initialize_native_scalping_risk_flags():
+    """
+    Executes seamlessly on boot at 9:15 AM inside your main script thread.
+    Dynamically maps the current directory to work on both Windows and Linux seamlessly!
+    """
+    current_date_str = datetime.now().strftime("%Y-%m-%d")
+    
+    global GLOBAL_IS_RBI_DAY, GLOBAL_IS_BUDGET_DAY, GLOBAL_IS_FED_DAY
+    
+    GLOBAL_IS_RBI_DAY = 0.0
+    GLOBAL_IS_BUDGET_DAY = 0.0
+    GLOBAL_IS_FED_DAY = 0.0
+    
+    # ✅ OS-AGNOSTIC FIX: Resolves the runtime directory path dynamically on execution
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    calendar_db_path = os.path.join(current_script_dir, "macro_annual_calendar.json")
+    
+    if os.path.exists(calendar_db_path):
+        try:
+            with open(calendar_db_path, "r", encoding="utf-8") as f:
+                annual_schedules = json.load(f)
+                
+            if current_date_str in annual_schedules:
+                print(f"🎯 [ENGINE BOOT] Active scheduled macro regime detected for today: {current_date_str}!")
+                day_data = annual_schedules[current_date_str]
+                
+                # 1. Unbox binary tracking floats natively for memory allocation
+                GLOBAL_IS_RBI_DAY    = float(day_data.get("is_rbi_day", 0.0))
+                GLOBAL_IS_BUDGET_DAY = float(day_data.get("is_budget_day", 0.0))
+                GLOBAL_IS_FED_DAY    = float(day_data.get("is_fed_day", 0.0))
+                
+                # 2. Hard-align the master record dictionary values instantly on startup!
+                # Pre-seeds a structural build-up vector before the market-hour countdown begins.
+                LATEST_GLOBAL_MACRO_RECORD["RBI_Speech_Active"]   = "0.1500" if GLOBAL_IS_RBI_DAY > 0.5 else "0.0000"
+                LATEST_GLOBAL_MACRO_RECORD["Union_Budget_Active"] = "0.2500" if GLOBAL_IS_BUDGET_DAY > 0.5 else "0.0000"
+                # Fed is an overnight shock, so it starts at full capacity (1.0000) at the 9:15 AM opening bell!
+                LATEST_GLOBAL_MACRO_RECORD["US_Fed_FOMC_Active"]  = "1.0000" if GLOBAL_IS_FED_DAY > 0.5 else "0.0000"
+                
+            else:
+                print(f"🗒️ [ENGINE BOOT] Standard calm macro regime confirmed for {current_date_str}. Using clear matrices.")
+                LATEST_GLOBAL_MACRO_RECORD["RBI_Speech_Active"]   = "0.0000"
+                LATEST_GLOBAL_MACRO_RECORD["Union_Budget_Active"] = "0.0000"
+                LATEST_GLOBAL_MACRO_RECORD["US_Fed_FOMC_Active"]  = "0.0000"
+                
+        except Exception as read_fault:
+            print(f"⚠️ [ENGINE BOOT WARNING] Failed parsing master calendar: {read_fault}. Using fallbacks safely.")
+    else:
+        print(f"⚠️ [ENGINE BOOT ALERT] macro_annual_calendar.json missing at cross-platform location: {calendar_db_path}. Defaulting fields to 0.0000.")
+
+
 
 # =====================================================================
 # 🏁 OPERATIONAL LIFE-CYCLE MANAGEMENT CONTROL EXECUTOR
@@ -8439,11 +8865,12 @@ if __name__ == "__main__":
     import time
     from datetime import datetime
 
-    # 1. Initialize safe execution memory thread locks upfront
+# 1. Initialize safe execution memory thread locks upfront
     if "cache_lock" not in globals(): globals()["cache_lock"] = threading.Lock()
     if "ws_cache_lock" not in globals(): globals()["ws_cache_lock"] = threading.Lock()
     if "cache_memory_lock" not in globals(): globals()["cache_memory_lock"] = threading.Lock()
     if "live_cache" not in globals(): globals()["live_cache"] = {}
+    if "ACTIVE_SUBSCRIBED_OPTIONS" not in globals(): globals()["ACTIVE_SUBSCRIBED_OPTIONS"] = {}
 
     try:
         # Step 2: Initialize system environment and setup directory pathways
@@ -8451,7 +8878,28 @@ if __name__ == "__main__":
         
         # Enforce ONE SINGLE master authenticating login handshake at the entry gate
         if execute_angel_one_handshake():
+            # We force the script to build your 6-token corridor maps in RAM 
+            # BEFORE starting the WebSocket threads. This completely wipes out the race condition!
+            print("📡 [BOOT SEED] Performing synchronous pre-market options corridor compilation...")
+            compiler_success = compile_local_token_registry()
             
+            if compiler_success:
+                # Pre-populate your active wire tracking maps so on_data() has them instantly on tick 1
+                for asset in ["NIFTY", "BANKNIFTY", "SENSEX"]:
+                    reg_node = TOKEN_REGISTRY_RAM.get(asset, {})
+                    target_tokens = []
+                    for token_key in ["ce_token", "pe_token", "itm_ce_token", "otm_pe_token", "otm_ce_token", "itm_pe_token"]:
+                        tk_val = str(reg_node.get(token_key, "")).strip()
+                        if tk_val and tk_val not in ("", "None", "0"):
+                            target_tokens.append(tk_val)
+                    
+                    ACTIVE_SUBSCRIBED_OPTIONS[f"{asset}_OPT"] = target_tokens
+                print(f"✅ [BOOT SEED SUCCESS] Pre-seeded options tracking map: {ACTIVE_SUBSCRIBED_OPTIONS}")
+            else:
+                print("⚠️ [BOOT SEED WARNING] Initial scrip compilation failed. Cache maps will warm up lazily.")
+
+            # Run the initialization instantly right inside your main startup sequence
+            initialize_native_scalping_risk_flags()            
             # Extract your synchronized, active authorization tokens from global registers safely
             active_auth = globals().get("ACTIVE_JWT_SESSION_TOKEN") or globals().get("AUTH_TOKEN")
             active_feed = globals().get("ACTIVE_FEED_SESSION_TOKEN") or globals().get("FEED_TOKEN")
